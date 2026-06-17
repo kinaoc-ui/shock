@@ -159,14 +159,17 @@ def format_market_cap(val):
 
 def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
-    st.markdown("本工具支援**本地自動掃描**與**雲端網頁拖放上傳**！全自動追蹤美股盤前/盤後即時動態。")
     st.write("---")
 
-    # ==================== 🛠️ 側邊欄設計：網頁分享版專用上傳區 ====================
-    st.sidebar.header("📁 網頁版數據上傳區")
-    st.sidebar.markdown("如果是朋友使用網頁版，請直接在下方丟入兩份從 TradingView 導出的 CSV：")
-    uploaded_new = st.sidebar.file_uploader("1️⃣ 上傳最新一日 CSV (New)", type=["csv"])
-    uploaded_old = st.sidebar.file_uploader("2️⃣ 上傳前一日 CSV (Old)", type=["csv"])
+    # ==================== 🛠️ 全新設計：正中間主畫面上傳區 ====================
+    st.markdown("### 📁 數據上傳區")
+    st.markdown("請直接在下方丟入兩份從 TradingView 導出的 CSV 檔案：")
+    
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        uploaded_new = st.file_uploader("1️⃣ 上傳最新一日 CSV (New)", type=["csv"])
+    with col_up2:
+        uploaded_old = st.file_uploader("2️⃣ 上傳前一日 CSV (Old)", type=["csv"])
 
     df_new = None
     df_old = None
@@ -187,17 +190,17 @@ def main():
             df_old = load_and_clean_csv(old_file)
             data_source_msg = f"📅 **當前數據來源：** 本地資料夾自動偵測 \n* **新一日：** `{os.path.basename(new_file)}` \n* **舊一日：** `{os.path.basename(old_file)}`"
 
-    # 如果兩邊都無數據，就顯示歡迎頁面 (雲端網頁剛打開時的狀態)
+    # 如果兩邊都無數據，就顯示歡迎頁面 (雲端網頁剛打開、未丟檔時的狀態)
     if df_new is None or df_old is None:
-        st.info("👋 **歡迎使用！請在左側側邊欄（Sidebar）上傳數據**\n\n請拖放兩份由 TradingView 篩選器（Screener）匯出的 CSV 檔案進去，系統將會即時為您分析新增、剔除標的，並跨海連線 Yahoo Finance 抓取最新盤前與盤後報價！")
+        st.info("👋 **歡迎使用！請在上方「數據上傳區」上傳檔案**\n\n請直接將兩份由 TradingView 匯出的 CSV 檔案拖放到上面的框框中，系統就會立刻在下方顯示分析結果！")
         return
 
     # 顯示目前用緊邊度嘅數據
-    st.info(data_source_msg)
+    st.success(data_source_msg)
 
     # 檢查是否缺少 Industry
     if 'Industry' in df_new.columns and (df_new['Industry'] == 'Unclassified').all():
-        st.warning("⚠️ **提示：** 偵測到上傳的 CSV 檔案中缺少 'Industry' (行業) 欄位。如需看見精準行業分類，請記得在 TradingView 篩選器中開啟 Industry 欄位並重新導出 CSV！")
+        st.warning("⚠️ **提示：** 偵測到上傳的 CSV 檔案中缺少 'Industry' (行業) 欄位。如需精準行業分類，請在 TradingView 篩選器中開啟 Industry 欄位並重新導出 CSV！")
 
     # ==================== 🔍 HEADER 篩選條件特徵摘要 ====================
     st.markdown("### 🔍 當前數據篩選特徵摘要 (基於新一日數據)")
@@ -259,29 +262,28 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 處理 TradingView 清單文字檔導出
+    # 處理 TradingView 清單文字檔導出 (移到正中間顯眼位置)
     today_str = datetime.now().strftime("%Y-%m-%d")
     if not is_cloud_upload:
-        # 本地跑：直接寫入同一個資料夾
         script_dir = os.path.dirname(os.path.abspath(__file__))
         tv_output_file = os.path.join(script_dir, f"{today_str}.txt")
         if generate_tradingview_watchlist(df_added_info, df_removed_info, top_10_gainers, top_10_losers, tv_output_file):
-            st.info(f"✅ **TradingView 當日清單已成功寫入本地資料夾！** 檔名：`{today_str}.txt`")
+            st.info(f"💾 **本地模式：** Watchlist 已成功寫入本地資料夾！檔名：`{today_str}.txt`")
     else:
-        # 雲端網頁版：直接提供點擊下載按鈕，讓朋友可以 download 返去
         import io
-        fake_file = io.StringIO()
-        # 暫時借用儲存機制
         generate_tradingview_watchlist(df_added_info, df_removed_info, top_10_gainers, top_10_losers, "temp.txt")
         if os.path.exists("temp.txt"):
             with open("temp.txt", "r", encoding="utf-8") as rf:
                 txt_content = rf.read()
             os.remove("temp.txt")
-            st.sidebar.download_button(
-                label="📥 下載 TradingView 分類導入檔 (.txt)",
+            
+            # 直接在數據源下方放一個超大的下載按鈕
+            st.download_button(
+                label="📥 點擊下載 TradingView 分類導入檔 (.txt)",
                 data=txt_content,
                 file_name=f"TV_Watchlist_{today_str}.txt",
-                mime="text/plain"
+                mime="text/plain",
+                use_container_width=True
             )
 
     # 抓即時盤前數據
