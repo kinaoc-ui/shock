@@ -10,14 +10,17 @@ import yfinance as yf
 st.set_page_config(layout="wide", page_title="美股兩日動態數據對比工具")
 
 def get_latest_two_csvs():
-    """自動搜尋當前資料夾下，最新修改/日期的兩個 new_*.csv 檔案"""
+    """自動搜尋當前資料夾下，依檔名日期排序（倒序）最新兩個 new_*.csv 檔案"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     search_pattern = os.path.join(script_dir, "new_*.csv")
     csv_files = glob.glob(search_pattern)
     
     if len(csv_files) < 2:
         return None, None
-    csv_files.sort(key=os.path.getmtime, reverse=True)
+        
+    # 【核心修正】唔再用檔案修改時間，直接用檔名文字（包含 YYYY-MM-DD）做倒序排序
+    # 咁樣 new_2026-06-17 必定排在 new_2026-06-16 前面，絕對不會因為下載時間而錯亂
+    csv_files.sort(reverse=True)
     return csv_files[0], csv_files[1]
 
 def load_and_clean_csv(file_path_or_buffer):
@@ -183,7 +186,7 @@ def main():
         if new_file and old_file:
             df_new = load_and_clean_csv(new_file)
             df_old = load_and_clean_csv(old_file)
-            data_source_msg = f"📅 **當前數據來源：** 系統內置預載數據 \n* **新一日：** `{os.path.basename(new_file)}` \n* **舊一日：** `{os.path.basename(old_file)}`"
+            data_source_msg = f"📅 **當前數據來源：** 系統內置預載數據 \n* **新一日（當前）：** `{os.path.basename(new_file)}` \n* **舊一日（前天）：** `{os.path.basename(old_file)}`"
 
     if df_new is None or df_old is None:
         st.info("👋 **歡迎使用！請在上方「數據上傳區」上傳檔案**\n\n請直接將兩份由 TradingView 匯出的 CSV 檔案拖放到上面的框框中，系統就會立刻顯示分析結果！")
@@ -191,15 +194,13 @@ def main():
 
     st.success(data_source_msg)
 
-    # 檢查是否缺少 Industry
-    if 'Industry' in df_new.columns and (df_new['Industry'] == 'Unclassified').all():
-        st.warning("⚠️ **提示：** 偵測到 CSV 檔案中缺少 'Industry' 欄位。")
-
-    # ==================== 📥 終極修正：萬能下載按鈕（放喺最顯眼位置） ====================
+    # ==================== 🛠️ 計算與邏輯比對 ====================
     set_new = set(df_new['Symbol'])
     set_old = set(df_old['Symbol'])
-    added_symbols = list(set_new - set_old)
-    removed_symbols = list(set_old - set_new)
+    
+    # 確保新舊邏輯完全清晰不顛倒
+    added_symbols = list(set_new - set_old)     # 在新榜但不在舊榜 -> 新增進榜 (up)
+    removed_symbols = list(set_old - set_new)   # 在舊榜但不在新榜 -> 被剔除 (down)
 
     df_added_info = df_new[df_new['Symbol'].isin(added_symbols)][['Symbol', 'Description', 'Price', 'Sector', 'Industry']].rename(
         columns={'Sector': '部門板塊', 'Industry': '行業'}
@@ -218,12 +219,11 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 生成文字內容
+    # 生成下載內容
     today_str = datetime.now().strftime("%Y-%m-%d")
     txt_content = generate_tradingview_watchlist_content(df_added_info, df_removed_info, top_10_gainers, top_10_losers)
     
     if txt_content:
-        # 1. 如果係你自己部電腦 Local 跑，順便自動塞一個實體 txt 檔入你 Desktop 資料夾放底
         if not is_manual_upload:
             try:
                 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -233,7 +233,6 @@ def main():
             except:
                 pass
         
-        # 2. 【全網共享下載掣】無論邊個開條 Link，一律喺最上面 show 出下載按鈕！
         st.download_button(
             label="📥 點擊下載今日 TradingView 分類導入檔 (.txt)",
             data=txt_content,
@@ -260,12 +259,12 @@ def main():
     col_add, col_rem = st.columns(2)
     with col_add:
         st.success(f"➕ **新增進榜股票 (共 {len(added_symbols)} 隻)**")
-        if added_symbols: st.dataframe(df_added_info, width='stretch', hide_index=True)
+        if not df_added_info.empty: st.dataframe(df_added_info, width='stretch', hide_index=True)
         else: st.write("今日無新增股票。")
             
     with col_rem:
         st.error(f"➖ **被剔除/消失股票 (共 {len(removed_symbols)} 隻)**")
-        if removed_symbols: st.dataframe(df_removed_info, width='stretch', hide_index=True)
+        if not df_removed_info.empty: st.dataframe(df_removed_info, width='stretch', hide_index=True)
         else: st.write("今日無消失股票。")
 
     st.write("---")
