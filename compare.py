@@ -254,7 +254,6 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     sp_success = False
     
     try:
-        # 多重嘗試
         for attempt in range(3):
             try:
                 sp500 = yf.download("^GSPC", period="15d", progress=False, timeout=15, threads=False)
@@ -342,18 +341,18 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     df_perf = pd.DataFrame(perf_records)
     df_hm = df_perf.pivot(index='Group', columns='Date', values='Avg_Pct').fillna(0.0)
     
-    # 獲取純日期欄位清單，用於精準計算平均數，避免欄位交叉污染
+    # 獲取純日期欄位清單
     date_columns = sorted([c for c in df_hm.columns], reverse=True)
     df_hm = df_hm[date_columns]
     
-    # 【核心修正】：mean(axis=1) 時明確指定只對 date_columns 進行計算
     df_hm['7日平均 %'] = df_hm[date_columns].mean(axis=1)
     df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_7d_pct
     
-    # 以相對大市排序
     df_hm = df_hm.sort_values(by='相對大市 %', ascending=False)
     df_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
-    return df_hm
+    
+    # 【核心修正點】：這裡必須正確回傳 tuple 兩個值
+    return df_hm, sp500_7d_pct
 
 def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
