@@ -378,4 +378,90 @@ def main():
     
     if txt_content:
         st.download_button(
-            label="
+            label="📥 點擊下載今日 TradingView 分類導入檔 (.txt)",
+            data=txt_content,
+            file_name=f"TV_Watchlist_{today_str}.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
+
+    # 介面排版：直接呈現 新增 / 剔除 股票細節
+    col_add, col_rem = st.columns(2)
+    with col_add:
+        st.success(f"➕ **新增進榜股票 (共 {len(added_symbols)} 隻)**")
+        if not df_added_info.empty: st.dataframe(df_added_info, width='stretch', hide_index=True)
+        else: st.write("今日無新增股票。")
+            
+    with col_rem:
+        st.error(f"➖ **被剔除/消失股票 (共 {len(removed_symbols)} 隻)**")
+        if not df_removed_info.empty: st.dataframe(df_removed_info, width='stretch', hide_index=True)
+        else: st.write("今日無消失股票。")
+
+    # ==================== 🔥 【全新加入】近 7 個交易日板塊動態熱力圖區塊 ====================
+    st.write("---")
+    st.subheader("🗺️ 近 7 個交易日板塊趨勢熱力圖 (Sector Momentum Heatmap)")
+    st.markdown("💡 **提示：** 橫向觀看可追踪特定板塊隨時間的冷熱切換。數字代表當日該板塊股票的**變動數量**，顏色愈深變動愈劇烈（最右邊為最新交易日）。")
+    
+    df_add_hm, df_rem_hm = calculate_recent_7_days_trends(local_files, df_new, df_old, active_date_str)
+    
+    col_hm1, col_hm2 = st.columns(2)
+    with col_hm1:
+        st.markdown("🟢 **各板塊：新增進榜熱度 (資金流入・動能加溫)**")
+        if df_add_hm is not None and not df_add_hm.empty:
+            date_cols = [c for c in df_add_hm.columns if c != '總計']
+            st.dataframe(
+                df_add_hm.style.background_gradient(subset=date_cols, cmap='Greens').format("{:d}", subset=date_cols),
+                width='stretch'
+            )
+        else:
+            st.info("暫無足夠歷史數據生成新增趨勢圖。")
+            
+    with col_hm2:
+        st.markdown("🔴 **各板塊：剔除下榜熱度 (資金流出・轉冷訊號)**")
+        if df_rem_hm is not None and not df_rem_hm.empty:
+            date_cols = [c for c in df_rem_hm.columns if c != '總計']
+            st.dataframe(
+                df_rem_hm.style.background_gradient(subset=date_cols, cmap='Reds').format("{:d}", subset=date_cols),
+                width='stretch'
+            )
+        else:
+            st.info("暫無足夠歷史數據生成剔除趨勢圖。")
+    # ===================================================================================
+
+    st.write("---")
+
+    # 聯網爬即時報價
+    all_target_syms = list(set(top_10_gainers['Symbol'].tolist() + top_10_losers['Symbol'].tolist()))
+    with st.spinner('🔄 正在同步美股聯網，抓取最新盤前/盤後即時報價...'):
+        live_quotes = fetch_live_market_data(all_target_syms)
+    
+    df_merge['即時市況'] = df_merge['Symbol'].map(lambda x: live_quotes[x]['即時市況'] if x in live_quotes else 'CSV歷史')
+    df_merge['即時價'] = df_merge['Symbol'].map(lambda x: live_quotes[x]['最新即時價'] if x in live_quotes else None)
+    df_merge['即時總變幅 %'] = df_merge['Symbol'].map(lambda x: live_quotes[x]['即時總變幅 %'] if x in live_quotes else None)
+    df_merge['即時價'] = df_merge['即時價'].fillna(df_merge['最新收盤價 (新)'])
+    df_merge['即時總變幅 %'] = df_merge['即時總變幅 %'].fillna(df_merge['兩日變幅 %'])
+
+    top_10_gainers_live = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
+    top_10_losers_live = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
+
+    cols_to_show = ['Symbol', 'Description', '即時市況', '即時總變幅 %', '即時價', '兩日變幅 %', '最新收盤價 (新)', '前日收盤價 (舊)', '部門板塊', '行業', '市值 (USD)']
+
+    st.subheader("🔥 兩日最強動能排行榜 (Top 10 Gainers) — 支援盤前即時聯網")
+    st.dataframe(
+        top_10_gainers_live[cols_to_show].style.format({
+            '兩日變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
+            '即時總變幅 %': '{:+.2f}%', '即時價': '${:.2f}'
+        }).background_gradient(subset=['即時總變幅 %'], cmap='Greens'), width='stretch', hide_index=True
+    )
+
+    st.write(" ")
+    st.subheader("🩸 兩日失速暴跌排行榜 (Top 10 Losers) — 支援盤前即時聯網")
+    st.dataframe(
+        top_10_losers_live[cols_to_show].style.format({
+            '兩日變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
+            '即時總變幅 %': '{:+.2f}%', '即時價': '${:.2f}'
+        }).background_gradient(subset=['即時總變幅 %'], cmap='Reds'), width='stretch', hide_index=True
+    )
+
+if __name__ == "__main__":
+    main()
