@@ -170,12 +170,84 @@ def generate_tradingview_watchlist_content(df_added, df_removed, top_gainers, to
             
     return "".join(output)
 
-def format_market_cap(val):
-    if pd.isna(val) or val == 0: return "N/A"
-    if val >= 1e12: return f"${val / 1e12:.2f} T"
-    if val >= 1e9: return f"${val / 1e9:.2f} B"
-    if val >= 1e6: return f"${val / 1e6:.2f} M"
-    return f"${val:,.0f}"
+def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, active_date_str):
+    """融合當前運算日與雲端歷史紀錄，計算近 7 個交易日的板塊新增/剔除統計矩陣"""
+    added_records = []
+    removed_records = []
+    
+    # 1. 先塞入當前畫面上正在對比的最新一組數據
+    set_new = set(active_df_new['Symbol'])
+    set_old = set(active_df_old['Symbol'])
+    
+    df_a = active_df_new[active_df_new['Symbol'].isin(set_new - set_old)]
+    if not df_a.empty:
+        for sector, count in df_a['Sector'].value_counts().items():
+            added_records.append({'Date': active_date_str, 'Sector': sector, 'Count': count})
+            
+    df_r = active_df_old[active_df_old['Symbol'].isin(set_old - set_new)]
+    if not df_r.empty:
+        for sector, count in df_r['Sector'].value_counts().items():
+            removed_records.append({'Date': active_date_str, 'Sector': sector, 'Count': count})
+            
+    # 2. 依序讀取硬碟歷史檔案，補足剩下天數（最多向前追溯合計 7 組交易日）
+    processed_dates = {active_date_str}
+    pairs_counted = 1
+    
+    for i in range(len(local_files) - 1):
+        if pairs_counted >= 7:
+            break
+            
+        f_new = local_files[i]
+        f_old = local_files[i+1]
+        
+        m = re.search(r'new_(\d{4}-\d{2}-\d{2})', os.path.basename(f_new))
+        date_str = m.group(1) if m else os.path.basename(f_new).replace("new_", "").replace(".csv", "")
+        
+        # 避免與當前活動日期重複計算
+        if date_str in processed_dates:
+            continue
+            
+        df_n = load_and_clean_csv(f_new)
+        df_o = load_and_clean_csv(f_old)
+        if df_n is None or df_o is None:
+            continue
+            
+        s_n = set(df_n['Symbol'])
+        s_o = set(df_o['Symbol'])
+        
+        df_a_h = df_n[df_n['Symbol'].isin(s_n - s_o)]
+        if not df_a_h.empty:
+            for sector, count in df_a_h['Sector'].value_counts().items():
+                added_records.append({'Date': date_str, 'Sector': sector, 'Count': count})
+                
+        df_r_h = df_o[df_o['Symbol'].isin(s_o - s_n)]
+        if not df_r_h.empty:
+            for sector, count in df_r_h['Sector'].value_counts().items():
+                removed_records.append({'Date': date_str, 'Sector': sector, 'Count': count})
+                
+        processed_dates.add(date_str)
+        pairs_counted += 1
+        
+    # 轉化成二維樞紐矩陣 (Heatmap 基礎結構)
+    df_add_hm, df_rem_hm = pd.DataFrame(), pd.DataFrame()
+    
+    if added_records:
+        df_add_all = pd.DataFrame(added_records)
+        df_add_hm = df_add_all.pivot(index='Sector', columns='Date', values='Count').fillna(0).astype(int)
+        df_add_hm = df_add_hm[sorted(df_add_hm.columns)]  # 日期排序從舊到新
+        df_add_hm['總計'] = df_add_hm.sum(axis=1)
+        df_add_hm = df_add_hm.sort_values(by='總計', ascending=False)
+        df_add_hm.index.name = '部門板塊'
+        
+    if removed_records:
+        df_rem_all = pd.DataFrame(removed_records)
+        df_rem_hm = df_rem_all.pivot(index='Sector', columns='Date', values='Count').fillna(0).astype(int)
+        df_rem_hm = df_rem_hm[sorted(df_rem_hm.columns)]  # 日期排序從舊到新
+        df_rem_hm['總計'] = df_rem_hm.sum(axis=1)
+        df_rem_hm = df_rem_hm.sort_values(by='總計', ascending=False)
+        df_rem_hm.index.name = '部門板塊'
+        
+    return df_add_hm, df_rem_hm
 
 def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
@@ -192,23 +264,23 @@ def main():
 
     df_new, df_old = None, None
     data_source_msg = ""
+    active_date_str = datetime.now().strftime("%Y-%m-%d") # 預設當前日期基準
     
     # 獲取系統雲端現有的舊檔案清單
     local_files = get_all_local_csvs()
 
     # --- 核心分支處理邏輯 ---
     if uploaded_new and uploaded_old:
-        # 情況 A：兩份都有上傳 -> 完全採用網頁端
         df_new = load_and_clean_csv(uploaded_new)
         df_old = load_and_clean_csv(uploaded_old)
         data_source_msg = f"📂 **當前數據來源：** 網頁端手動上傳兩份 CSV \n* 最新：`{uploaded_new.name}`\n* 前日：`{uploaded_old.name}`"
+        m = re.search(r'new_(\d{4}-\d{2}-\d{2})', uploaded_new.name)
+        if m: active_date_str = m.group(1)
         trigger_sync(uploaded_new)
         trigger_sync(uploaded_old)
 
     elif uploaded_new and not uploaded_old:
-        # 情況 B：只上傳最新一份 -> 自動智能配對雲端上最新的一份舊檔案
         df_new = load_and_clean_csv(uploaded_new)
-        
         if local_files:
             target_old_file = local_files[0]
             if os.path.basename(target_old_file) == uploaded_new.name and len(local_files) >= 2:
@@ -218,11 +290,11 @@ def main():
             data_source_msg = f"📂 **當前數據來源：** 智能混合模式\n* 最新（網頁上傳）：`{uploaded_new.name}`\n* 前日（雲端自動匹配）：`{os.path.basename(target_old_file)}`"
         else:
             st.error("❌ 雲端系統內找不到任何歷史數據，請同時上傳前一日的 CSV 進行首度初始化！")
-        
+        m = re.search(r'new_(\d{4}-\d{2}-\d{2})', uploaded_new.name)
+        if m: active_date_str = m.group(1)
         trigger_sync(uploaded_new)
 
     elif not uploaded_new and uploaded_old:
-        # 情況 C：只上傳舊一份
         df_old = load_and_clean_csv(uploaded_old)
         if local_files:
             target_new_file = local_files[0]
@@ -230,27 +302,26 @@ def main():
                 target_new_file = local_files[1]
             df_new = load_and_clean_csv(target_new_file)
             data_source_msg = f"📂 **當前數據來源：** 智能混合模式\n* 最新（雲端自動匹配）：`{os.path.basename(target_new_file)}`\n* 前日（網頁上傳）：`{uploaded_old.name}`"
+            m = re.search(r'new_(\d{4}-\d{2}-\d{2})', os.path.basename(target_new_file))
+            if m: active_date_str = m.group(1)
         trigger_sync(uploaded_old)
 
     else:
-        # 情況 D：完全冇上傳 -> 開放【歷史日期切換選單】
         st.write("---")
         st.markdown("### 📜 歷史數據快速切換")
         
         if len(local_files) >= 2:
-            # 建立歷史日期映射表
             options = []
             file_map = {}
             
-            for i, f in enumerate(local_files[:-1]): # 最後一個檔案因為沒有「更舊的一天」可比對，故排除
+            for i, f in enumerate(local_files[:-1]):
                 filename = os.path.basename(f)
-                # 正則提取 YYYY-MM-DD
                 date_match = re.search(r'new_(\d{4}-\d{2}-\d{2})', filename)
                 date_str = date_match.group(1) if date_match else filename
                 
                 display_name = f"📅 {date_str}" + (" (最新雲端數據)" if i == 0 else "")
                 options.append(display_name)
-                file_map[display_name] = (f, local_files[i+1]) # 目前日子 與 比他舊一天的日子
+                file_map[display_name] = (f, local_files[i+1])
                 
             selected_option = st.selectbox(
                 "請選擇你想查閱的歷史基準日（系統會自動對比其前一天的數據）：", 
@@ -261,8 +332,9 @@ def main():
             chosen_new_file, chosen_old_file = file_map[selected_option]
             df_new = load_and_clean_csv(chosen_new_file)
             df_old = load_and_clean_csv(chosen_old_file)
-            
             data_source_msg = f"🏛️ **當前數據來源：** 查閱歷史存檔 \n* **新一日（基準）：** `{os.path.basename(chosen_new_file)}` \n* **舊一日（對比）：** `{os.path.basename(chosen_old_file)}`"
+            m = re.search(r'new_(\d{4}-\d{2}-\d{2})', os.path.basename(chosen_new_file))
+            if m: active_date_str = m.group(1)
         elif len(local_files) == 1:
             df_new = load_and_clean_csv(local_files[0])
             st.warning("⚠️ 目前雲端只有一份 CSV，無法進行兩日對比。請在上方上傳更多歷史數據。")
@@ -300,79 +372,10 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 產生下載
+    # 產生下載按鈕
     today_str = datetime.now().strftime("%Y-%m-%d")
     txt_content = generate_tradingview_watchlist_content(df_added_info, df_removed_info, top_10_gainers, top_10_losers)
     
     if txt_content:
         st.download_button(
-            label="📥 點擊下載今日 TradingView 分類導入檔 (.txt)",
-            data=txt_content,
-            file_name=f"TV_Watchlist_{today_str}.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
-
-    # 數據看板呈現
-    st.markdown("### 🔍 當前數據篩選特徵摘要")
-    total_stocks = len(df_new)
-    unique_sectors = df_new['Sector'].nunique()
-    valid_mcap = df_new[df_new['Market capitalization'] > 0]['Market capitalization']
-    min_mcap_str = format_market_cap(valid_mcap.min()) if not valid_mcap.empty else "N/A"
-    max_mcap_str = format_market_cap(valid_mcap.max()) if not valid_mcap.empty else "N/A"
-    
-    met_1, met_2, met_3, met_4 = st.columns(4)
-    met_1.metric(label="📊 總進榜標的", value=f"{total_stocks} 隻")
-    met_2.metric(label="🏢 涵蓋板塊數量", value=f"{unique_sectors} 個")
-    met_3.metric(label="📉 篩選最低市值", value=min_mcap_str)
-    met_4.metric(label="📈 篩選最高市值", value=max_mcap_str)
-    st.write("---")
-
-    col_add, col_rem = st.columns(2)
-    with col_add:
-        st.success(f"➕ **新增進榜股票 (共 {len(added_symbols)} 隻)**")
-        if not df_added_info.empty: st.dataframe(df_added_info, width='stretch', hide_index=True)
-        else: st.write("今日無新增股票。")
-            
-    with col_rem:
-        st.error(f"➖ **被剔除/消失股票 (共 {len(removed_symbols)} 隻)**")
-        if not df_removed_info.empty: st.dataframe(df_removed_info, width='stretch', hide_index=True)
-        else: st.write("今日無消失股票。")
-
-    st.write("---")
-
-    # 聯網爬即時報價
-    all_target_syms = list(set(top_10_gainers['Symbol'].tolist() + top_10_losers['Symbol'].tolist()))
-    with st.spinner('🔄 正在同步美股聯網，抓取最新盤前/盤後即時報價...'):
-        live_quotes = fetch_live_market_data(all_target_syms)
-    
-    df_merge['即時市況'] = df_merge['Symbol'].map(lambda x: live_quotes[x]['即時市況'] if x in live_quotes else 'CSV歷史')
-    df_merge['即時價'] = df_merge['Symbol'].map(lambda x: live_quotes[x]['最新即時價'] if x in live_quotes else None)
-    df_merge['即時總變幅 %'] = df_merge['Symbol'].map(lambda x: live_quotes[x]['即時總變幅 %'] if x in live_quotes else None)
-    df_merge['即時價'] = df_merge['即時價'].fillna(df_merge['最新收盤價 (新)'])
-    df_merge['即時總變幅 %'] = df_merge['即時總變幅 %'].fillna(df_merge['兩日變幅 %'])
-
-    top_10_gainers_live = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
-    top_10_losers_live = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
-
-    cols_to_show = ['Symbol', 'Description', '即時市況', '即時總變幅 %', '即時價', '兩日變幅 %', '最新收盤價 (新)', '前日收盤價 (舊)', '部門板塊', '行業', '市值 (USD)']
-
-    st.subheader("🔥 兩日最強動能排行榜 (Top 10 Gainers) — 支援盤前即時聯網")
-    st.dataframe(
-        top_10_gainers_live[cols_to_show].style.format({
-            '兩日變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
-            '即時總變幅 %': '{:+.2f}%', '即時價': '${:.2f}'
-        }).background_gradient(subset=['即時總變幅 %'], cmap='Greens'), width='stretch', hide_index=True
-    )
-
-    st.write(" ")
-    st.subheader("🩸 兩日失速暴跌排行榜 (Top 10 Losers) — 支援盤前即時聯網")
-    st.dataframe(
-        top_10_losers_live[cols_to_show].style.format({
-            '兩日變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
-            '即時總變幅 %': '{:+.2f}%', '即時價': '${:.2f}'
-        }).background_gradient(subset=['即時總變幅 %'], cmap='Reds'), width='stretch', hide_index=True
-    )
-
-if __name__ == "__main__":
-    main()
+            label="
