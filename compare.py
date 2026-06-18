@@ -32,7 +32,6 @@ def push_to_github_backend(file_name, file_bytes):
         g = Github(token)
         repo = g.get_repo(repo_name)
         
-        # 檢查 GitHub 內原本有冇同名檔案，有就覆蓋，冇就新建
         try:
             contents = repo.get_contents(file_name)
             repo.update_file(contents.path, f"Auto-update {file_name} via web", file_bytes, contents.sha)
@@ -87,10 +86,7 @@ def load_and_clean_csv(file_path_or_buffer):
         return None
 
 def fetch_sp500_historical_returns(dates):
-    """
-    極速獲取 S&P 500 對應日期的真實收益率。
-    採用業界最穩健的 SPY (S&P 500 ETF) 作為代理。
-    """
+    """極速獲取 S&P 500 對應日期的真實收益率。"""
     sp500_returns = {}
     if not dates:
         return sp500_returns
@@ -217,8 +213,8 @@ def generate_tradingview_watchlist_content(df_added, df_removed, top_gainers, to
             
     return "".join(output)
 
-def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, active_date_str):
-    """融合當前運算日與雲端歷史紀錄，計算近 7 個交易日的板塊新增/剔除統計矩陣"""
+def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, active_date_str, group_by_col='Sector'):
+    """融合當前運算日與雲端歷史紀錄，計算近 7 個交易日的分組新增/剔除統計矩陣 (支援 Sector 與 Industry)"""
     added_records = []
     removed_records = []
     
@@ -227,13 +223,13 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     
     df_a = active_df_new[active_df_new['Symbol'].isin(set_new - set_old)]
     if not df_a.empty:
-        for sector, count in df_a['Sector'].value_counts().items():
-            added_records.append({'Date': active_date_str, 'Sector': sector, 'Count': count})
+        for grp_name, count in df_a[group_by_col].value_counts().items():
+            added_records.append({'Date': active_date_str, 'Group_Name': grp_name, 'Count': count})
             
     df_r = active_df_old[active_df_old['Symbol'].isin(set_old - set_new)]
     if not df_r.empty:
-        for sector, count in df_r['Sector'].value_counts().items():
-            removed_records.append({'Date': active_date_str, 'Sector': sector, 'Count': count})
+        for grp_name, count in df_r[group_by_col].value_counts().items():
+            removed_records.append({'Date': active_date_str, 'Group_Name': grp_name, 'Count': count})
             
     processed_dates = {active_date_str}
     pairs_counted = 1
@@ -261,13 +257,13 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
         
         df_a_h = df_n[df_n['Symbol'].isin(s_n - s_o)]
         if not df_a_h.empty:
-            for sector, count in df_a_h['Sector'].value_counts().items():
-                added_records.append({'Date': date_str, 'Sector': sector, 'Count': count})
+            for grp_name, count in df_a_h[group_by_col].value_counts().items():
+                added_records.append({'Date': date_str, 'Group_Name': grp_name, 'Count': count})
                 
         df_r_h = df_o[df_o['Symbol'].isin(s_o - s_n)]
         if not df_r_h.empty:
-            for sector, count in df_r_h['Sector'].value_counts().items():
-                removed_records.append({'Date': date_str, 'Sector': sector, 'Count': count})
+            for grp_name, count in df_r_h[group_by_col].value_counts().items():
+                removed_records.append({'Date': date_str, 'Group_Name': grp_name, 'Count': count})
                 
         processed_dates.add(date_str)
         pairs_counted += 1
@@ -276,19 +272,19 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     
     if added_records:
         df_add_all = pd.DataFrame(added_records)
-        df_add_hm = df_add_all.pivot(index='Sector', columns='Date', values='Count').fillna(0).astype(int)
+        df_add_hm = df_add_all.pivot(index='Group_Name', columns='Date', values='Count').fillna(0).astype(int)
         df_add_hm = df_add_hm[sorted(df_add_hm.columns)]
         df_add_hm['總計'] = df_add_hm.sum(axis=1)
         df_add_hm = df_add_hm.sort_values(by='總計', ascending=False)
-        df_add_hm.index.name = '部門板塊'
+        df_add_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
         
     if removed_records:
         df_rem_all = pd.DataFrame(removed_records)
-        df_rem_hm = df_rem_all.pivot(index='Sector', columns='Date', values='Count').fillna(0).astype(int)
+        df_rem_hm = df_rem_all.pivot(index='Group_Name', columns='Date', values='Count').fillna(0).astype(int)
         df_rem_hm = df_rem_hm[sorted(df_rem_hm.columns)]
         df_rem_hm['總計'] = df_rem_hm.sum(axis=1)
         df_rem_hm = df_rem_hm.sort_values(by='總計', ascending=False)
-        df_rem_hm.index.name = '部門板塊'
+        df_rem_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
         
     return df_add_hm, df_rem_hm
 
@@ -334,7 +330,6 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         if not common:
             continue
             
-        # 這裡改為撈取動態傳入的欄位 (Sector 或是 Industry)
         df_n_sub = df_n[df_n['Symbol'].isin(common)][['Symbol', 'Price', group_by_col]]
         df_o_sub = df_o[df_o['Symbol'].isin(common)][['Symbol', 'Price']]
         df_m = pd.merge(df_n_sub, df_o_sub, on='Symbol', suffixes=('_new', '_old'))
@@ -343,7 +338,6 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
         sp500_bench = sp500_history.get(date_str, 0.0)
         
-        # 這裡改為依照動態欄位分組
         for group_name, avg_val in df_m.groupby(group_by_col)['Change_Pct'].mean().items():
             alpha_val = avg_val - sp500_bench
             daily_alpha_records.append({
@@ -366,8 +360,6 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         cumulative_factor *= (1.0 + df_pivot[col] / 100.0)
     
     df_pivot['7日累積超額 %'] = (cumulative_factor - 1.0) * 100.0
-    
-    # 根據傳入的是 Sector 還是 Industry，設定正確的 index 名稱
     df_pivot.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
     
     return df_pivot
@@ -394,7 +386,7 @@ def main():
     if uploaded_new and uploaded_old:
         df_new = load_and_clean_csv(uploaded_new)
         df_old = load_and_clean_csv(uploaded_old)
-        data_source_msg = f"📂 **當前數據來源：** 網頁端手手動上傳兩份 CSV \n* 最新：`{uploaded_new.name}`\n* 前日：`{uploaded_old.name}`"
+        data_source_msg = f"📂 **當前數據來源：** 網頁端手動上傳兩份 CSV \n* 最新：`{uploaded_new.name}`\n* 前日：`{uploaded_old.name}`"
         m = re.search(r'new_(\d{4}-\d{2}-\d{2})', uploaded_new.name)
         if m: active_date_str = m.group(1)
         trigger_sync(uploaded_new)
@@ -520,14 +512,14 @@ def main():
 
     # ==================== 1️⃣ 🛠️ 近 7 個交易日板塊【數量變動】熱力圖區塊 ====================
     st.write("---")
-    st.subheader("🗺️ 近 7 個交易日板塊趨勢熱力圖 (Sector Momentum Heatmap)")
-    st.markdown("💡 **提示：** 橫向觀看可追踪特定板塊隨時間的冷熱切換。數字代表當日該板塊股票的**變動數量**，顏色愈深變動愈劇烈（最右邊為最新交易日）。")
+    st.subheader("🗺️ 近 7 個交易日板塊數量趨勢熱力圖 (Sector Momentum Heatmap)")
+    st.markdown("💡 **提示：** 數字代表當日該板塊股票的**進出榜變動數量**，顏色愈深變動愈劇烈（最右邊為最新交易日）。")
     
-    df_add_hm, df_rem_hm = calculate_recent_7_days_trends(local_files, df_new, df_old, active_date_str)
+    df_add_hm, df_rem_hm = calculate_recent_7_days_trends(local_files, df_new, df_old, active_date_str, group_by_col='Sector')
     
     col_hm1, col_hm2 = st.columns(2)
     with col_hm1:
-        st.markdown("🟢 **各板塊：新增進榜熱度 (資金流入・動能加溫)**")
+        st.markdown("🟢 **板塊：新增進榜熱度 (資金流入・動能加溫)**")
         if df_add_hm is not None and not df_add_hm.empty:
             date_cols = [c for c in df_add_hm.columns if c != '總計']
             st.dataframe(
@@ -538,7 +530,7 @@ def main():
             st.info("暫無足夠歷史數據生成新增趨勢圖。")
             
     with col_hm2:
-        st.markdown("🔴 **各板塊：剔除下榜熱度 (資金流出・轉冷訊號)**")
+        st.markdown("🔴 **板塊：剔除下榜熱度 (資金流出・轉冷訊號)**")
         if df_rem_hm is not None and not df_rem_hm.empty:
             date_cols = [c for c in df_rem_hm.columns if c != '總計']
             st.dataframe(
@@ -548,7 +540,37 @@ def main():
         else:
             st.info("暫無足夠歷史數據生成剔除趨勢圖。")
 
-    # ==================== 2️⃣ 🔥 近 7 個交易日板塊【漲跌強度】熱力圖區塊 ====================
+    # ==================== 2️⃣ 🛠️ 近 7 個交易日細分行業【數量變動】熱力圖區塊 ====================
+    st.write("---")
+    st.subheader("🗺️ 近 7 個交易日細分行業數量趨勢熱力圖 (Industry Momentum Heatmap)")
+    st.markdown("💡 **提示：** 追蹤更精細的**行業 (Industry)** 股票進出榜變動，顯示異動最頻繁的前 20 大行業。")
+    
+    df_ind_add_hm, df_ind_rem_hm = calculate_recent_7_days_trends(local_files, df_new, df_old, active_date_str, group_by_col='Industry')
+    
+    col_ind_hm1, col_ind_hm2 = st.columns(2)
+    with col_ind_hm1:
+        st.markdown("🟢 **細分行業：新增進榜熱度 (Top 20)**")
+        if df_ind_add_hm is not None and not df_ind_add_hm.empty:
+            date_cols = [c for c in df_ind_add_hm.columns if c != '總計']
+            st.dataframe(
+                df_ind_add_hm.head(20).style.background_gradient(subset=date_cols, cmap='Greens').format(formatter="{:d}", subset=date_cols),
+                width='stretch'
+            )
+        else:
+            st.info("暫無足夠歷史數據生成新增趨勢圖。")
+            
+    with col_ind_hm2:
+        st.markdown("🔴 **細分行業：剔除下榜熱度 (Top 20)**")
+        if df_ind_rem_hm is not None and not df_ind_rem_hm.empty:
+            date_cols = [c for c in df_ind_rem_hm.columns if c != '總計']
+            st.dataframe(
+                df_ind_rem_hm.head(20).style.background_gradient(subset=date_cols, cmap='Reds').format(formatter="{:d}", subset=date_cols),
+                width='stretch'
+            )
+        else:
+            st.info("暫無足夠歷史數據生成剔除趨勢圖。")
+
+    # ==================== 3️⃣ 🔥 近 7 個交易日板塊【漲跌強度】熱力圖區塊 ====================
     st.write("---")
     st.subheader("📈 近 7 個交易日板塊漲跌幅強度熱力圖 (Sector Performance Heatmap)")
     st.markdown("💡 **提示：** 本面板計算過去 7 個交易日各板塊平均回報『扣除當日 S&P 500 (SPY) 回報』後的**累積超額複利收益 % (Alpha)**。🟢 **深綠色代表大幅跑贏大盤**，🔴 **深紅色代表大幅跑輸大盤**，中間依 0% 自動平衡。")
@@ -589,29 +611,29 @@ def main():
     else:
         st.info("暫無足夠歷史數據生成漲跌幅強度熱力圖。")
 
-    # ==================== 3️⃣ 🎯 近 7 個交易日細分行業【漲跌強度】熱力圖區塊 ====================
+    # ==================== 4️⃣ 🎯 近 7 個交易日細分行業【漲跌強度】熱力圖區塊 ====================
     st.write("---")
     st.subheader("🎯 近 7 個交易日細分行業漲跌幅強度熱力圖 (Industry Performance Heatmap)")
     st.markdown("💡 **提示：** 深入追蹤更精細的**行業 (Industry)** 資金動向。算法與板塊完全一致，同樣扣除了 S&P 500 的市場漲跌幅。")
     
     with st.spinner('🔄 正在重構細分行業複利熱力圖...'):
-        df_ind_hm = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Industry')
+        df_ind_perf_hm = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Industry')
     
-    if df_ind_hm is not None and not df_ind_hm.empty:
-        col_ind1, col_ind2 = st.columns(2)
-        date_cols_ind = [c for c in df_ind_hm.columns if c != '7日累積超額 %']
+    if df_ind_perf_hm is not None and not df_ind_perf_hm.empty:
+        col_ind_perf1, col_ind_perf2 = st.columns(2)
+        date_cols_ind = [c for c in df_ind_perf_hm.columns if c != '7日累積超額 %']
         
         if date_cols_ind:
-            vals_ind = df_ind_hm[date_cols_ind].to_numpy()
+            vals_ind = df_ind_perf_hm[date_cols_ind].to_numpy()
             max_val_ind = float(max(abs(vals_ind.min()), abs(vals_ind.max())))
             if max_val_ind == 0: max_val_ind = 1.0
         else:
             max_val_ind = 1.0
 
         # 全體按累積表現排序
-        df_ind_sorted = df_ind_hm.sort_values(by='7日累積超額 %', ascending=False)
+        df_ind_sorted = df_ind_perf_hm.sort_values(by='7日累積超額 %', ascending=False)
 
-        with col_ind1:
+        with col_ind_perf1:
             st.markdown("🚀 **多頭領漲行業排行 Top 15 (依 7日累積超額 由強到弱排序)**")
             df_ind_g = df_ind_sorted.head(15)
             st.dataframe(
@@ -619,7 +641,7 @@ def main():
                 width='stretch'
             )
             
-        with col_ind2:
+        with col_ind_perf2:
             st.markdown("💥 **空頭領跌行業排行 Top 15 (依 7日累積超額 由弱到強排序)**")
             df_ind_l = df_ind_sorted.tail(15).sort_values(by='7日累積超額 %', ascending=True)
             st.dataframe(
