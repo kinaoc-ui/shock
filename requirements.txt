@@ -2,3 +2,36 @@ pandas
 streamlit
 yfinance
 matplotlib
+import streamlit as st
+from github import Github
+
+# 讀取 Streamlit Secrets 安全金鑰
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+REPO_NAME = "kinaoc-ui/shock"
+
+st.title("美股兩日清單動態對比")
+
+uploaded_file = st.file_uploader("上傳最新一日的 CSV", type=["csv"])
+
+if uploaded_file is not None:
+    file_bytes = uploaded_file.getvalue()
+    file_name = uploaded_file.name # 例如 new_2026-06-18.csv
+    
+    # 畫面上即時顯示計出來的結果
+    st.success(f"成功接收 {file_name}，正在處理並嘗試永久存檔...")
+    
+    # 【核心自動化】用後台直接射上 GitHub 永久儲存
+    try:
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(REPO_NAME)
+        
+        # 睇吓 GitHub 內原本有冇同名檔案，有就更新，冇就新建
+        try:
+            contents = repo.get_contents(file_name)
+            repo.update_file(contents.path, f"Auto-update {file_name}", file_bytes, contents.sha)
+        except:
+            repo.create_file(file_name, f"Auto-upload {file_name}", file_bytes)
+            
+        st.success("🎉 檔案已成功自動 Commit 到 GitHub！以後點樣 F5 都唔會消失喇！")
+    except Exception as e:
+        st.error(f"上傳 GitHub 失敗: {e}")
