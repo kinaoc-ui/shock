@@ -246,7 +246,7 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     return df_add_hm, df_rem_hm
 
 def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str, group_by_col='Sector'):
-    """近 7 日板塊/行業強度 + 精準相對 S&P 500"""
+    """近 7 日強度計算（支援動態選擇 Sector 或 Industry）"""
     perf_records = []
     
     # ==================== 抓取 S&P 500 7日平均 ====================
@@ -267,6 +267,7 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     except:
         pass
 
+    # 避免重複顯示通知
     if group_by_col == 'Sector':
         if sp_success:
             st.success(f"✅ S&P 500 過去7日平均每日變幅： **{sp500_7d_pct:+.2f}%**")
@@ -274,7 +275,7 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
             st.warning("⚠️ 無法自動獲取 S&P 500 數據，使用 0% 作為基準（只顯示絕對漲跌）")
             sp500_7d_pct = 0.0
 
-    # ==================== 計算各分組 ====================
+    # ==================== 計算各分組強度 ====================
     set_new = set(active_df_new['Symbol'])
     set_old = set(active_df_old['Symbol'])
     common = list(set_new & set_old)
@@ -285,14 +286,15 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         df_m = df_m[df_m['Price_old'] > 0]
         df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
         
+        # 【核心修正點1】：動能分組改用動態傳入的 group_by_col 變數
         for name, group in df_m.groupby(group_by_col):
             perf_records.append({
                 'Date': active_date_str, 
-                'Group': str(name).strip(), 
+                'GroupKey': str(name).strip(), 
                 'Avg_Pct': group['Change_Pct'].mean()
             })
 
-    # 歷史數據 loop
+    # 歷史數據對比迴圈
     processed_dates = {active_date_str}
     pairs_counted = 1
     local_files = sorted(local_files, key=lambda x: os.path.basename(x), reverse=True)
@@ -322,10 +324,11 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
             df_m_h = df_m_h[df_m_h['Price_old'] > 0]
             df_m_h['Change_Pct'] = ((df_m_h['Price_new'] - df_m_h['Price_old']) / df_m_h['Price_old']) * 100
             
+            # 【核心修正點2】：歷史資料迴圈同樣動態對齊分組
             for name, group in df_m_h.groupby(group_by_col):
                 perf_records.append({
                     'Date': date_str, 
-                    'Group': str(name).strip(), 
+                    'GroupKey': str(name).strip(), 
                     'Avg_Pct': group['Change_Pct'].mean()
                 })
                 
@@ -333,15 +336,14 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         pairs_counted += 1
 
     if group_by_col == 'Sector' and perf_records:
-        st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據順利完成板塊與行業強度計算")
+        st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據計算板塊與行業強度")
 
     if not perf_records:
-        return None
+        return None, sp500_7d_pct
         
     df_perf = pd.DataFrame(perf_records)
-    df_hm = df_perf.pivot(index='Group', columns='Date', values='Avg_Pct').fillna(0.0)
+    df_hm = df_perf.pivot(index='GroupKey', columns='Date', values='Avg_Pct').fillna(0.0)
     
-    # 獲取純日期欄位清單
     date_columns = sorted([c for c in df_hm.columns], reverse=True)
     df_hm = df_hm[date_columns]
     
@@ -349,9 +351,9 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_7d_pct
     
     df_hm = df_hm.sort_values(by='相對大市 %', ascending=False)
-    df_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
     
-    # 【核心修正點】：這裡必須正確回傳 tuple 兩個值
+    # 【核心修正點3】：根據傳入變數動態設置 DataFrame 的 index 名稱
+    df_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
     return df_hm, sp500_7d_pct
 
 def main():
@@ -475,7 +477,6 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 生成 TradingView Watchlist
     today_str = datetime.now().strftime("%Y-%m-%d")
     txt_content = generate_tradingview_watchlist_content(df_added_info, df_removed_info, top_10_gainers, top_10_losers)
     
@@ -503,7 +504,6 @@ def main():
     # ==================== 1️⃣ 🛠️ 近 7 個交易日板塊【數量變動】熱力圖區塊 ====================
     st.write("---")
     st.subheader("🗺️ 近 7 個交易日板塊趨勢熱力圖 (Sector Momentum Heatmap)")
-    st.markdown("💡 **提示：** 橫向觀看可追踪特定板塊隨時間的冷熱切換。數字代表當日該板塊股票的**變動數量**，顏色愈深變動愈劇烈（最右邊為最新交易日）。")
     
     df_add_hm, df_rem_hm = calculate_recent_7_days_trends(local_files, df_new, df_old, active_date_str)
     
@@ -533,11 +533,11 @@ def main():
     # ==================== 2️⃣ 🔥 近 7 個交易日板塊【漲跌強度】熱力圖區塊 ====================
     st.write("---")
     st.subheader("📈 近 7 個交易日板塊漲跌幅強度熱力圖 (Sector Performance Heatmap)")
-    st.markdown("💡 **提示：** 本面板計算過去 7 個交易日各板塊所有成分股的**平均變幅 %**。🟢 **深綠色代表大幅暴漲**，🔴 **深紅色代表大幅暴跌**，中間依 0% 自動平衡。")
+    st.markdown("💡 **提示：** 本面板計算過去 7 個交易日各板塊所有成分股的**平均變幅 %**。顏色依據相對大市表現渲染。")
     
     res_sector = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Sector')
     
-    if res_sector is not None:
+    if res_sector[0] is not None:
         df_perf_hm, sp500_7d_pct = res_sector
         if not df_perf_hm.empty:
             col_perf1, col_perf2 = st.columns(2)
@@ -570,14 +570,15 @@ def main():
     else:
         st.info("暫無足夠歷史數據生成漲跌幅強度熱力圖。")
 
-    # ==================== 3️⃣ 🎯 近 7 個交易日行業【漲跌強度】熱力圖區塊 ====================
+    # ==================== 3️⃣ 🎯 【全新修復】近 7 個交易日細分行業【漲跌強度】熱力圖區塊 ====================
     st.write("---")
     st.subheader("🎯 近 7 個交易日細分行業漲跌幅強度熱力圖 (Industry Performance Heatmap)")
-    st.markdown("💡 **提示：** 深入追蹤更精細的**行業 (Industry) 級別**資金動向。排序與色彩對比邏輯與板塊完全一致，幫你精準抓出隱藏的領漲黑馬行業。")
+    st.markdown("💡 **提示：** 深入追蹤精細的**行業 (Industry)** 級別資金動向。")
     
+    # 【核心修正點4】：傳入 'Industry' 給函式進行完全獨立的分組運算
     res_industry = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Industry')
     
-    if res_industry is not None:
+    if res_industry[0] is not None:
         df_ind_hm, sp500_7d_pct = res_industry
         if not df_ind_hm.empty:
             col_ind1, col_ind2 = st.columns(2)
