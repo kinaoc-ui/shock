@@ -503,9 +503,13 @@ def main():
         else:
             max_val = 1.0
 
+        # 【核心修正：在這裡加入全體預先排序與多空切片隔離】
+        df_all_sorted = df_perf_hm.sort_values(by='7日平均 %', ascending=False)
+
         with col_perf1:
             st.markdown("🏆 **多頭領漲板塊排行 (依 7日均值 由強到弱排序)**")
-            df_perf_g = df_perf_hm.sort_values(by='7日平均 %', ascending=False)
+            # 嚴格切片：只抓最強的前 10 名
+            df_perf_g = df_all_sorted.head(10)
             st.dataframe(
                 df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
                 width='stretch'
@@ -513,7 +517,8 @@ def main():
             
         with col_perf2:
             st.markdown("🩸 **空頭領跌板塊排行 (依 7日均值 由弱到強排序)**")
-            df_perf_l = df_perf_hm.sort_values(by='7日平均 %', ascending=True)
+            # 嚴格切片：只抓最弱的最後 10 名，並且重新排序讓最弱的在頂端
+            df_perf_l = df_all_sorted.tail(10).sort_values(by='7日平均 %', ascending=True)
             st.dataframe(
                 df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
                 width='stretch'
