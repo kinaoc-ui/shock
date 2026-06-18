@@ -1,0 +1,97 @@
+### Top_Gainers_動能核心
+VSAT
+FLY
+LUNR
+UCTT
+RDW
+ACMR
+SNDK
+KLAC
+MXL
+ONTO
+
+### Top_Losers_失速核心
+CNC
+ZM
+AAOI
+AUR
+PLUG
+WAT
+UNH
+CDNS
+WST
+NTAP
+
+### up_Commercial services
+XYZ
+
+### up_Communications
+GSAT
+LUMN
+
+### up_Consumer durables
+DHI
+AS
+TOL
+SWK
+
+### up_Consumer non-durables
+BIRK
+VFC
+
+### up_Consumer services
+SPHR
+
+### up_Electronic technology
+BA
+EMR
+CR
+QBTS
+COHU
+
+### up_Finance
+SAN
+BN
+ITUB
+
+### up_Health technology
+ARWR
+TWST
+TVTX
+
+### up_Industrial services
+FER
+MYRG
+
+### up_Non-energy minerals
+ALM
+
+### up_Process industries
+SQM
+ESI
+
+### up_Producer manufacturing
+TOELY
+MMM
+LII
+WSO
+APTV
+FLS
+ENS
+GTX
+ACLS
+ICHR
+
+### up_Retail trade
+ANF
+SIG
+
+### up_Technology services
+IBM
+ADEA
+TENB
+VOYG
+
+### down_Health technology
+A
+
