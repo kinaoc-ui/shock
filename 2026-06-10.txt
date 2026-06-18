@@ -1,0 +1,92 @@
+### Top_Gainers_動能核心
+SN
+APH
+GLXY
+LEGN
+CARR
+CRDO
+WSM
+LUV
+MAS
+WST
+
+### Top_Losers_失速核心
+AAOI
+RDW
+AXTI
+COHR
+IONQ
+PLUG
+IREN
+MXL
+LITE
+LUNR
+
+### up_Commercial services
+CRL
+
+### up_Consumer durables
+TOL
+
+### up_Consumer non-durables
+CROX
+PVH
+
+### up_Consumer services
+BROS
+SIRI
+
+### up_Distribution services
+ARW
+AVT
+
+### up_Electronic technology
+GRMN
+LOGI
+QRVO
+ST
+
+### up_Finance
+BN
+APO
+HBAN
+EVR
+ALLY
+CAR
+
+### up_Health technology
+VTRS
+ELAN
+RVTY
+NUVL
+
+### up_Industrial services
+FLR
+
+### up_Non-energy minerals
+MT
+
+### up_Producer manufacturing
+WSO
+AAON
+TKR
+ACMR
+
+### up_Retail trade
+DKS
+FIVE
+
+### down_Electronic technology
+QBTS
+INFQ
+WOLF
+
+### down_Producer manufacturing
+POET
+
+### down_Technology services
+ORCL
+APP
+CRWV
+S
+
