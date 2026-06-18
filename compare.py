@@ -182,7 +182,7 @@ def main():
     st.write("---")
 
     st.markdown("### 📁 數據上傳區")
-    st.markdown("💡 **提示：** 正常情況下你**只需要上傳「1️⃣ 最新一日 CSV」** 即可，系統會自動在雲端匹配前一日的數據。如果你想手動對比特定日子，也可以將兩份一齊上傳。")
+    st.markdown("💡 **提示：** 正常情況下你**只需要上傳「1️⃣ 最新一日 CSV」** 即可。如果你想查看過往日子，**請勿上傳檔案**，直接使用下方的歷史切換選單。")
     
     col_up1, col_up2 = st.columns(2)
     with col_up1:
@@ -210,7 +210,6 @@ def main():
         df_new = load_and_clean_csv(uploaded_new)
         
         if local_files:
-            # 防呆：避免配對到與上傳檔名一模一樣的本地暫存檔
             target_old_file = local_files[0]
             if os.path.basename(target_old_file) == uploaded_new.name and len(local_files) >= 2:
                 target_old_file = local_files[1]
@@ -223,7 +222,7 @@ def main():
         trigger_sync(uploaded_new)
 
     elif not uploaded_new and uploaded_old:
-        # 情況 C：只上傳舊一份（極少發生，做埋防呆）
+        # 情況 C：只上傳舊一份
         df_old = load_and_clean_csv(uploaded_old)
         if local_files:
             target_new_file = local_files[0]
@@ -234,11 +233,40 @@ def main():
         trigger_sync(uploaded_old)
 
     else:
-        # 情況 D：完全冇上傳 -> 自動讀取雲端最新兩份
+        # 情況 D：完全冇上傳 -> 開放【歷史日期切換選單】
+        st.write("---")
+        st.markdown("### 📜 歷史數據快速切換")
+        
         if len(local_files) >= 2:
+            # 建立歷史日期映射表
+            options = []
+            file_map = {}
+            
+            for i, f in enumerate(local_files[:-1]): # 最後一個檔案因為沒有「更舊的一天」可比對，故排除
+                filename = os.path.basename(f)
+                # 正則提取 YYYY-MM-DD
+                date_match = re.search(r'new_(\d{4}-\d{2}-\d{2})', filename)
+                date_str = date_match.group(1) if date_match else filename
+                
+                display_name = f"📅 {date_str}" + (" (最新雲端數據)" if i == 0 else "")
+                options.append(display_name)
+                file_map[display_name] = (f, local_files[i+1]) # 目前日子 與 比他舊一天的日子
+                
+            selected_option = st.selectbox(
+                "請選擇你想查閱的歷史基準日（系統會自動對比其前一天的數據）：", 
+                options,
+                index=0
+            )
+            
+            chosen_new_file, chosen_old_file = file_map[selected_option]
+            df_new = load_and_clean_csv(chosen_new_file)
+            df_old = load_and_clean_csv(chosen_old_file)
+            
+            data_source_msg = f"🏛️ **當前數據來源：** 查閱歷史存檔 \n* **新一日（基準）：** `{os.path.basename(chosen_new_file)}` \n* **舊一日（對比）：** `{os.path.basename(chosen_old_file)}`"
+        elif len(local_files) == 1:
             df_new = load_and_clean_csv(local_files[0])
-            df_old = load_and_clean_csv(local_files[1])
-            data_source_msg = f"📅 **當前數據來源：** GitHub 雲端儲存數據 \n* **新一日（當前）：** `{os.path.basename(local_files[0])}` \n* **舊一日（前天）：** `{os.path.basename(local_files[1])}`"
+            st.warning("⚠️ 目前雲端只有一份 CSV，無法進行兩日對比。請在上方上傳更多歷史數據。")
+            return
         else:
             st.info("👋 **歡迎使用！請在上方「數據上傳區」投入最新一日的 CSV 檔案。**")
             return
