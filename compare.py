@@ -246,23 +246,36 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     return df_add_hm, df_rem_hm
 
 def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str):
-    """追蹤近 7 個交易日各板塊漲跌幅 + 相對 S&P 500"""
+    """近 7 日板塊強度 + 相對 S&P 500（加強版）"""
     perf_records = []
     
-    # === 改進版 S&P 500 抓取 ===
-    sp500_avg = 0.0
+    # ==================== 抓取 S&P 500 7日平均 ====================
+    sp500_7d_pct = 0.0
     sp_success = False
+    
     try:
         import yfinance as yf
-        sp500 = yf.download("^GSPC", period="30d", progress=False, timeout=10)['Adj Close']
-        if not sp500.empty:
-            sp500_returns = sp500.pct_change() * 100
-            sp500_avg = sp500_returns.mean()  # 過去一段時間平均
-            sp_success = True
-            st.success(f"📈 S&P 500 過去數據獲取成功（平均每日 {sp500_avg:.2f}%)")
-    except Exception as e:
-        st.warning(f"⚠️ S&P 500 數據暫時無法獲取（{str(e)[:80]}...），使用絕對漲跌幅")
-    
+        # 多重嘗試
+        for attempt in range(3):
+            try:
+                sp500 = yf.download("^GSPC", period="15d", progress=False, timeout=15, threads=False)
+                if not sp500.empty and 'Adj Close' in sp500.columns:
+                    returns = sp500['Adj Close'].pct_change() * 100
+                    sp500_7d_pct = returns.tail(7).mean()   # 最近7個交易日平均
+                    sp_success = True
+                    break
+            except:
+                continue
+    except:
+        pass
+
+    if sp_success:
+        st.success(f"✅ S&P 500 過去7日平均每日變幅： **{sp500_7d_pct:+.2f}%**")
+    else:
+        st.warning("⚠️ 無法自動獲取 S&P 500 數據，使用 0% 作為基準（只顯示絕對漲跌）")
+        sp500_7d_pct = 0.0
+
+    # ==================== 計算各板塊 ====================
     # 當前一對
     set_new = set(active_df_new['Symbol'])
     set_old = set(active_df_old['Symbol'])
@@ -281,7 +294,7 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
                 'Avg_Pct': group['Change_Pct'].mean()
             })
 
-    # 歷史數據 loop（保持原有邏輯）
+    # 歷史數據 loop
     processed_dates = {active_date_str}
     pairs_counted = 1
     local_files = sorted(local_files, key=lambda x: os.path.basename(x), reverse=True)
@@ -320,7 +333,7 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
                 
         processed_dates.add(date_str)
         pairs_counted += 1
-    
+
     st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據計算")
 
     if not perf_records:
@@ -330,15 +343,10 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     df_hm = df_perf.pivot(index='Sector', columns='Date', values='Avg_Pct').fillna(0.0)
     df_hm = df_hm[sorted(df_hm.columns, reverse=True)]
     df_hm['7日平均 %'] = df_hm.mean(axis=1)
+    df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_7d_pct
     
-    # === 相對大市 ===
-    if sp_success:
-        df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_avg
-        sort_col = '相對大市 %'
-    else:
-        sort_col = '7日平均 %'
-    
-    df_hm = df_hm.sort_values(by=sort_col, ascending=False)
+    # 以相對大市排序
+    df_hm = df_hm.sort_values(by='相對大市 %', ascending=False)
     df_hm.index.name = '部門板塊'
     return df_hm
 
