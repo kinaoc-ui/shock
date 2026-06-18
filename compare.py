@@ -203,7 +203,6 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
         m = re.search(r'new_(\d{4}-\d{2}-\d{2})', os.path.basename(f_new))
         date_str = m.group(1) if m else os.path.basename(f_new).replace("new_", "").replace(".csv", "")
         
-        # 避免與當前活動日期重複計算
         if date_str in processed_dates:
             continue
             
@@ -228,13 +227,12 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
         processed_dates.add(date_str)
         pairs_counted += 1
         
-    # 轉化成二維樞紐矩陣 (Heatmap 基礎結構)
     df_add_hm, df_rem_hm = pd.DataFrame(), pd.DataFrame()
     
     if added_records:
         df_add_all = pd.DataFrame(added_records)
         df_add_hm = df_add_all.pivot(index='Sector', columns='Date', values='Count').fillna(0).astype(int)
-        df_add_hm = df_add_hm[sorted(df_add_hm.columns)]  # 日期排序從舊到新
+        df_add_hm = df_add_hm[sorted(df_add_hm.columns)]
         df_add_hm['總計'] = df_add_hm.sum(axis=1)
         df_add_hm = df_add_hm.sort_values(by='總計', ascending=False)
         df_add_hm.index.name = '部門板塊'
@@ -242,12 +240,77 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     if removed_records:
         df_rem_all = pd.DataFrame(removed_records)
         df_rem_hm = df_rem_all.pivot(index='Sector', columns='Date', values='Count').fillna(0).astype(int)
-        df_rem_hm = df_rem_hm[sorted(df_rem_hm.columns)]  # 日期排序從舊到新
+        df_rem_hm = df_rem_hm[sorted(df_rem_hm.columns)]
         df_rem_hm['總計'] = df_rem_hm.sum(axis=1)
         df_rem_hm = df_rem_hm.sort_values(by='總計', ascending=False)
         df_rem_hm.index.name = '部門板塊'
         
     return df_add_hm, df_rem_hm
+
+def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str):
+    """【全新核心算法】追蹤近 7 個交易日各板塊的平均兩日漲跌幅 % 強度"""
+    perf_records = []
+    
+    # 1. 計算當前活動對比日的板塊平均表現
+    set_new = set(active_df_new['Symbol'])
+    set_old = set(active_df_old['Symbol'])
+    common = list(set_new & set_old)
+    if common:
+        df_n_sub = active_df_new[active_df_new['Symbol'].isin(common)][['Symbol', 'Price', 'Sector']]
+        df_o_sub = active_df_old[active_df_old['Symbol'].isin(common)][['Symbol', 'Price']]
+        df_m = pd.merge(df_n_sub, df_o_sub, on='Symbol', suffixes=('_new', '_old'))
+        df_m = df_m[df_m['Price_old'] > 0]  # 安全過濾
+        df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
+        
+        for sector, val in df_m.groupby('Sector')['Change_Pct'].mean().items():
+            perf_records.append({'Date': active_date_str, 'Sector': sector, 'Avg_Pct': val})
+            
+    # 2. 追蹤剩下幾天的歷史檔案
+    processed_dates = {active_date_str}
+    pairs_counted = 1
+    
+    for i in range(len(local_files) - 1):
+        if pairs_counted >= 7:
+            break
+        f_new = local_files[i]
+        f_old = local_files[i+1]
+        
+        m = re.search(r'new_(\d{4}-\d{2}-\d{2})', os.path.basename(f_new))
+        date_str = m.group(1) if m else os.path.basename(f_new).replace("new_", "").replace(".csv", "")
+        
+        if date_str in processed_dates:
+            continue
+            
+        df_n = load_and_clean_csv(f_new)
+        df_o = load_and_clean_csv(f_old)
+        if df_n is None or df_o is None:
+            continue
+            
+        s_n = set(df_n['Symbol'])
+        s_o = set(df_o['Symbol'])
+        comm = list(s_n & s_o)
+        if comm:
+            df_n_s = df_n[df_n['Symbol'].isin(comm)][['Symbol', 'Price', 'Sector']]
+            df_o_s = df_o[df_o['Symbol'].isin(comm)][['Symbol', 'Price']]
+            df_m_h = pd.merge(df_n_s, df_o_s, on='Symbol', suffixes=('_new', '_old'))
+            df_m_h = df_m_h[df_m_h['Price_old'] > 0]
+            df_m_h['Change_Pct'] = ((df_m_h['Price_new'] - df_m_h['Price_old']) / df_m_h['Price_old']) * 100
+            
+            for sector, val in df_m_h.groupby('Sector')['Change_Pct'].mean().items():
+                perf_records.append({'Date': date_str, 'Sector': sector, 'Avg_Pct': val})
+                
+        processed_dates.add(date_str)
+        pairs_counted += 1
+        
+    if not perf_records:
+        return None
+        
+    df_perf = pd.DataFrame(perf_records)
+    df_hm = df_perf.pivot(index='Sector', columns='Date', values='Avg_Pct').fillna(0.0)
+    df_hm = df_hm[sorted(df_hm.columns)]  # 日期由舊到新
+    df_hm['7日平均 %'] = df_hm.mean(axis=1)
+    df_hm.index.name = '部門板塊'
+    return df_hm
 
 def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
@@ -264,12 +327,10 @@ def main():
 
     df_new, df_old = None, None
     data_source_msg = ""
-    active_date_str = datetime.now().strftime("%Y-%m-%d") # 預設當前日期基準
+    active_date_str = datetime.now().strftime("%Y-%m-%d")
     
-    # 獲取系統雲端現有的舊檔案清單
     local_files = get_all_local_csvs()
 
-    # --- 核心分支處理邏輯 ---
     if uploaded_new and uploaded_old:
         df_new = load_and_clean_csv(uploaded_new)
         df_old = load_and_clean_csv(uploaded_old)
@@ -372,13 +433,13 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 產生下載按鈕
+    # 採用安全的三引號解決字串斷行引發的 SyntaxError 
     today_str = datetime.now().strftime("%Y-%m-%d")
     txt_content = generate_tradingview_watchlist_content(df_added_info, df_removed_info, top_10_gainers, top_10_losers)
     
     if txt_content:
         st.download_button(
-            label="📥 點擊下載今日 TradingView 分類導入檔 (.txt)",
+            label="""📥 點擊下載今日 TradingView 分類導入檔 (.txt)""",
             data=txt_content,
             file_name=f"TV_Watchlist_{today_str}.txt",
             mime="text/plain",
@@ -397,7 +458,7 @@ def main():
         if not df_removed_info.empty: st.dataframe(df_removed_info, width='stretch', hide_index=True)
         else: st.write("今日無消失股票。")
 
-    # ==================== 🔥 【全新加入】近 7 個交易日板塊動態熱力圖區塊 ====================
+    # ==================== 1️⃣ 🛠️ 近 7 個交易日板塊【數量變動】熱力圖區塊 ====================
     st.write("---")
     st.subheader("🗺️ 近 7 個交易日板塊趨勢熱力圖 (Sector Momentum Heatmap)")
     st.markdown("💡 **提示：** 橫向觀看可追踪特定板塊隨時間的冷熱切換。數字代表當日該板塊股票的**變動數量**，顏色愈深變動愈劇烈（最右邊為最新交易日）。")
@@ -426,7 +487,36 @@ def main():
             )
         else:
             st.info("暫無足夠歷史數據生成剔除趨勢圖。")
-    # ===================================================================================
+
+    # ==================== 2️⃣ 🔥 【全新特製】近 7 個交易日板塊【漲跌強度】熱力圖區塊 ====================
+    st.write("---")
+    st.subheader("📈 近 7 個交易日板塊漲跌幅強度熱力圖 (Sector Performance Heatmap)")
+    st.markdown("💡 **提示：** 本面板計算過去 7 個交易日各板塊所有成分股的**平均變幅 %**。🟢 **深綠色代表大幅暴漲**，🔴 **深紅色代表大幅暴跌**，中間依 0% 自動平衡。")
+    
+    df_perf_hm = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str)
+    
+    if df_perf_hm is not None and not df_perf_hm.empty:
+        col_perf1, col_perf2 = st.columns(2)
+        date_cols_perf = [c for c in df_perf_hm.columns if c != '7日平均 %']
+        
+        with col_perf1:
+            st.markdown("🏆 **多頭領漲板塊排行 (依 7日均值 由強到弱排序)**")
+            df_perf_g = df_perf_hm.sort_values(by='7日平均 %', ascending=False)
+            st.dataframe(
+                df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', center=0).format("{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                width='stretch'
+            )
+            
+        with col_perf2:
+            st.markdown("🩸 **空頭領跌板塊排行 (依 7日均值 由弱到強排序)**")
+            df_perf_l = df_perf_hm.sort_values(by='7日平均 %', ascending=True)
+            st.dataframe(
+                df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', center=0).format("{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                width='stretch'
+            )
+    else:
+        st.info("暫無足夠歷史數據生成漲跌幅強度熱力圖。")
+    # ==================================================================================================
 
     st.write("---")
 
