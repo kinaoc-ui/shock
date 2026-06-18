@@ -9,18 +9,15 @@ import yfinance as yf
 # 設定網頁介面為寬屏模式
 st.set_page_config(layout="wide", page_title="美股兩日動態數據對比工具")
 
-def get_latest_two_csvs():
-    """自動搜尋當前資料夾下，依檔名日期排序（倒序）最新兩個 new_*.csv 檔案"""
+def get_all_local_csvs():
+    """搜尋當前資料夾下所有符合格式的 CSV，依檔名日期從新到舊排序"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     search_pattern = os.path.join(script_dir, "new_*.csv")
     csv_files = glob.glob(search_pattern)
-    
-    if len(csv_files) < 2:
-        return None, None
-        
-    # 直接用檔名文字（包含 YYYY-MM-DD）做倒序排序
-    csv_files.sort(reverse=True)
-    return csv_files[0], csv_files[1]
+    if csv_files:
+        csv_files.sort(reverse=True)
+        return csv_files
+    return []
 
 def push_to_github_backend(file_name, file_bytes):
     """【後台自動化核心】將網頁收到的 CSV 即時經後台 Commit & Push 回 GitHub"""
@@ -45,6 +42,13 @@ def push_to_github_backend(file_name, file_bytes):
     except Exception as e:
         st.warning(f"後台自動備份到 GitHub 失敗（但不影響本次運算）: {e}")
         return False
+
+def trigger_sync(uploaded_file):
+    """觸發後台同步機制（利用 Session State 防止重複提交）"""
+    if st.session_state.get(f"synced_{uploaded_file.name}") is None:
+        if push_to_github_backend(uploaded_file.name, uploaded_file.getvalue()):
+            st.session_state[f"synced_{uploaded_file.name}"] = True
+            st.toast(f"🚀 {uploaded_file.name} 已成功自動上傳並永久儲存至 GitHub！", icon="✨")
 
 def load_and_clean_csv(file_path_or_buffer):
     """讀取 CSV 並清洗欄位名稱與代號（含缺失欄位自動補底）"""
@@ -178,41 +182,68 @@ def main():
     st.write("---")
 
     st.markdown("### 📁 數據上傳區")
-    st.markdown("當你在網頁端上傳新 CSV 檔，系統會**全自動將檔案備份同步回 GitHub** 儲存，以後無論點樣 F5 重新整理數據都唔會消失！")
+    st.markdown("💡 **提示：** 正常情況下你**只需要上傳「1️⃣ 最新一日 CSV」** 即可，系統會自動在雲端匹配前一日的數據。如果你想手動對比特定日子，也可以將兩份一齊上傳。")
     
     col_up1, col_up2 = st.columns(2)
     with col_up1:
-        uploaded_new = st.file_uploader("1️⃣ 上傳最新一日 CSV (格式必須為 new_YYYY-MM-DD.csv)", type=["csv"])
+        uploaded_new = st.file_uploader("1️⃣ 上傳最新一日 CSV (格式：new_YYYY-MM-DD.csv)", type=["csv"])
     with col_up2:
-        uploaded_old = st.file_uploader("2️⃣ 上傳前一日 CSV (格式必須為 new_YYYY-MM-DD.csv)", type=["csv"])
+        uploaded_old = st.file_uploader("2️⃣ [選填] 上傳前一日 CSV (格式：new_YYYY-MM-DD.csv)", type=["csv"])
 
     df_new, df_old = None, None
     data_source_msg = ""
+    
+    # 獲取系統雲端現有的舊檔案清單
+    local_files = get_all_local_csvs()
 
+    # --- 核心分支處理邏輯 ---
     if uploaded_new and uploaded_old:
+        # 情況 A：兩份都有上傳 -> 完全採用網頁端
         df_new = load_and_clean_csv(uploaded_new)
         df_old = load_and_clean_csv(uploaded_old)
-        data_source_msg = "📂 **當前數據來源：** 網頁端手動上傳的 CSV 數據"
+        data_source_msg = f"📂 **當前數據來源：** 網頁端手動上傳兩份 CSV \n* 最新：`{uploaded_new.name}`\n* 前日：`{uploaded_old.name}`"
+        trigger_sync(uploaded_new)
+        trigger_sync(uploaded_old)
+
+    elif uploaded_new and not uploaded_old:
+        # 情況 B：只上傳最新一份 -> 自動智能配對雲端上最新的一份舊檔案
+        df_new = load_and_clean_csv(uploaded_new)
         
-        # 【核心觸發】利用 Session State 鎖定，防止重新渲染時無故重複提交
-        if st.session_state.get(f"synced_{uploaded_new.name}") is None:
-            if push_to_github_backend(uploaded_new.name, uploaded_new.getvalue()):
-                st.session_state[f"synced_{uploaded_new.name}"] = True
-                st.toast(f"🚀 {uploaded_new.name} 已成功自動上傳並永久儲存至 GitHub！", icon="✨")
+        if local_files:
+            # 防呆：避免配對到與上傳檔名一模一樣的本地暫存檔
+            target_old_file = local_files[0]
+            if os.path.basename(target_old_file) == uploaded_new.name and len(local_files) >= 2:
+                target_old_file = local_files[1]
                 
-        if st.session_state.get(f"synced_{uploaded_old.name}") is None:
-            if push_to_github_backend(uploaded_old.name, uploaded_old.getvalue()):
-                st.session_state[f"synced_{uploaded_old.name}"] = True
-                st.toast(f"🚀 {uploaded_old.name} 已成功自動上傳並永久儲存至 GitHub！", icon="✨")
+            df_old = load_and_clean_csv(target_old_file)
+            data_source_msg = f"📂 **當前數據來源：** 智能混合模式\n* 最新（網頁上傳）：`{uploaded_new.name}`\n* 前日（雲端自動匹配）：`{os.path.basename(target_old_file)}`"
+        else:
+            st.error("❌ 雲端系統內找不到任何歷史數據，請同時上傳前一日的 CSV 進行首度初始化！")
+        
+        trigger_sync(uploaded_new)
+
+    elif not uploaded_new and uploaded_old:
+        # 情況 C：只上傳舊一份（極少發生，做埋防呆）
+        df_old = load_and_clean_csv(uploaded_old)
+        if local_files:
+            target_new_file = local_files[0]
+            if os.path.basename(target_new_file) == uploaded_old.name and len(local_files) >= 2:
+                target_new_file = local_files[1]
+            df_new = load_and_clean_csv(target_new_file)
+            data_source_msg = f"📂 **當前數據來源：** 智能混合模式\n* 最新（雲端自動匹配）：`{os.path.basename(target_new_file)}`\n* 前日（網頁上傳）：`{uploaded_old.name}`"
+        trigger_sync(uploaded_old)
+
     else:
-        new_file, old_file = get_latest_two_csvs()
-        if new_file and old_file:
-            df_new = load_and_clean_csv(new_file)
-            df_old = load_and_clean_csv(old_file)
-            data_source_msg = f"📅 **當前數據來源：** GitHub 雲端儲存數據 \n* **新一日（當前）：** `{os.path.basename(new_file)}` \n* **舊一日（前天）：** `{os.path.basename(old_file)}`"
+        # 情況 D：完全冇上傳 -> 自動讀取雲端最新兩份
+        if len(local_files) >= 2:
+            df_new = load_and_clean_csv(local_files[0])
+            df_old = load_and_clean_csv(local_files[1])
+            data_source_msg = f"📅 **當前數據來源：** GitHub 雲端儲存數據 \n* **新一日（當前）：** `{os.path.basename(local_files[0])}` \n* **舊一日（前天）：** `{os.path.basename(local_files[1])}`"
+        else:
+            st.info("👋 **歡迎使用！請在上方「數據上傳區」投入最新一日的 CSV 檔案。**")
+            return
 
     if df_new is None or df_old is None:
-        st.info("👋 **歡迎使用！請在上方「數據上傳區」直接投入兩份 CSV 檔案。**")
         return
 
     st.success(data_source_msg)
