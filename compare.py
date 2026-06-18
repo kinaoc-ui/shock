@@ -1,7 +1,7 @@
 import os
 import glob
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -27,7 +27,7 @@ def push_to_github_backend(file_name, file_bytes):
     try:
         from github import Github
         token = st.secrets["GITHUB_TOKEN"]
-        repo_name = "kinaoc-ui/shock"  # 你的專案路徑
+        repo_name = "kinaoc-ui/shock"  # 你嘅專案路徑
         
         g = Github(token)
         repo = g.get_repo(repo_name)
@@ -85,59 +85,6 @@ def load_and_clean_csv(file_path_or_buffer):
     except Exception as e:
         st.error(f"讀取數據失敗: {e}")
         return None
-
-def fetch_sp500_historical_returns(dates):
-    """
-    極速獲取 S&P 500 對應日期的真實收益率。
-    採用業界最穩健的 SPY (S&P 500 ETF) 作為代理。
-    """
-    sp500_returns = {}
-    if not dates:
-        return sp500_returns
-        
-    try:
-        # 將日期排序並轉換成 datetime
-        dt_list = []
-        for d in dates:
-            try:
-                dt_list.append(datetime.strptime(d, "%Y-%m-%d"))
-            except:
-                continue
-        if not dt_list:
-            return sp500_returns
-            
-        start_date = (min(dt_list) - timedelta(days=5)).strftime("%Y-%m-%d")
-        end_date = (max(dt_list) + timedelta(days=5)).strftime("%Y-%m-%d")
-        
-        # 下載 SPY 歷史價格
-        spy = yf.Ticker("SPY")
-        hist = spy.history(start=start_date, end=end_date)
-        
-        # 備用方案：如果 SPY 沒數據，嘗試 ^GSPC (標普 500 指數)
-        if hist.empty:
-            spy = yf.Ticker("^GSPC")
-            hist = spy.history(start=start_date, end=end_date)
-            
-        if not hist.empty:
-            hist['Daily_Return'] = hist['Close'].pct_change() * 100
-            for dt in dt_list:
-                date_str = dt.strftime("%Y-%m-%d")
-                # 尋找當天或最近一個交易日的報酬率
-                temp_hist = hist.loc[hist.index.strftime('%Y-%m-%d') == date_str]
-                if not temp_hist.empty:
-                    sp500_returns[date_str] = temp_hist['Daily_Return'].values[0]
-                else:
-                    # 如果當天是假日，找最接近的前一個交易日
-                    closest_idx = hist.index.asof(dt)
-                    if pd.notna(closest_idx):
-                        sp500_returns[date_str] = hist.loc[closest_idx, 'Daily_Return']
-                    else:
-                        sp500_returns[date_str] = 0.0
-    except Exception as e:
-        # 防線：萬一網絡被牆或 Yahoo 報錯，返回合理的 0.0 避免阻礙大盤顯示
-        for d in dates:
-            sp500_returns[d] = 0.0
-    return sp500_returns
 
 def fetch_live_market_data(symbols):
     """全自動連線 Yahoo Finance 抓取盤前/盤後即時價格及變幅"""
@@ -298,20 +245,59 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
         
     return df_add_hm, df_rem_hm
 
-def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str):
-    """
-    【全新革命性算法】：
-    1. 拒絕攤薄！全面改用『幾何複利累積回報率 (Compound Cumulative Return)』計算。
-    2. 自動抓取標普 500 (SPY) 作為基準，扣除大盤表現，算出真實的超額收益 (Alpha)。
-    """
-    # 1. 收集這 7 個交易日所有的對比組日期
-    day_pairs = []
+def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str, group_by_col='Sector'):
+    """近 7 日板塊/行業強度 + 相對 S&P 500（通用抽象版，支援 Sector 與 Industry）"""
+    perf_records = []
     
-    # 放入當前運算組
-    day_pairs.append((active_df_new, active_df_old, active_date_str))
+    # ==================== 抓取 S&P 500 7日平均 ====================
+    sp500_7d_pct = 0.0
+    sp_success = False
     
+    try:
+        import yfinance as yf
+        for attempt in range(3):
+            try:
+                sp500 = yf.download("^GSPC", period="15d", progress=False, timeout=15, threads=False)
+                if not sp500.empty and 'Adj Close' in sp500.columns:
+                    returns = sp500['Adj Close'].pct_change() * 100
+                    sp500_7d_pct = returns.tail(7).mean()   # 最近7個交易日平均
+                    sp_success = True
+                    break
+            except:
+                continue
+    except:
+        pass
+
+    # 僅在計算 Sector 時顯示一次大盤提示資訊，避免 Industry 重複洗版
+    if group_by_col == 'Sector':
+        if sp_success:
+            st.success(f"✅ S&P 500 過去7日平均每日變幅： **{sp500_7d_pct:+.2f}%**")
+        else:
+            st.warning("⚠️ 無法自動獲取 S&P 500 數據，使用 0% 作為基準（只顯示絕對漲跌）")
+            sp500_7d_pct = 0.0
+
+    # ==================== 計算各分組 (Sector 或 Industry) ====================
+    set_new = set(active_df_new['Symbol'])
+    set_old = set(active_df_old['Symbol'])
+    common = list(set_new & set_old)
+    if common:
+        df_n_sub = active_df_new[active_df_new['Symbol'].isin(common)][['Symbol', 'Price', group_by_col]]
+        df_o_sub = active_df_old[active_df_old['Symbol'].isin(common)][['Symbol', 'Price']]
+        df_m = pd.merge(df_n_sub, df_o_sub, on='Symbol', suffixes=('_new', '_old'))
+        df_m = df_m[df_m['Price_old'] > 0]
+        df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
+        
+        for name, group in df_m.groupby(group_by_col):
+            perf_records.append({
+                'Date': active_date_str, 
+                'Group': str(name).strip(), 
+                'Avg_Pct': group['Change_Pct'].mean()
+            })
+
+    # 歷史數據 loop
     processed_dates = {active_date_str}
     pairs_counted = 1
+    local_files = sorted(local_files, key=lambda x: os.path.basename(x), reverse=True)
     
     for i in range(len(local_files) - 1):
         if pairs_counted >= 7:
@@ -327,64 +313,43 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
             
         df_n = load_and_clean_csv(f_new)
         df_o = load_and_clean_csv(f_old)
-        if df_n is not None and df_o is not None:
-            day_pairs.append((df_n, df_o, date_str))
-            processed_dates.add(date_str)
-            pairs_counted += 1
-            
-    # 2. 獲取 S&P 500 這幾天的歷史回報
-    all_dates = [pair[2] for pair in day_pairs]
-    sp500_history = fetch_sp500_historical_returns(all_dates)
-    
-    # 3. 計算每一天、每個板塊的「相對於 S&P 500 的超額回報」
-    daily_alpha_records = [] # 儲存格式: {Date, Sector, Alpha_Return}
-    
-    for df_n, df_o, date_str in day_pairs:
-        common = list(set(df_n['Symbol']) & set(df_o['Symbol']))
-        if not common:
+        if df_n is None or df_o is None:
             continue
             
-        df_n_sub = df_n[df_n['Symbol'].isin(common)][['Symbol', 'Price', 'Sector']]
-        df_o_sub = df_o[df_o['Symbol'].isin(common)][['Symbol', 'Price']]
-        df_m = pd.merge(df_n_sub, df_o_sub, on='Symbol', suffixes=('_new', '_old'))
-        df_m = df_m[df_m['Price_old'] > 0]
-        
-        # 個股兩日變幅 %
-        df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
-        
-        # 該對比日 S&P 500 的回報基準
-        sp500_bench = sp500_history.get(date_str, 0.0)
-        
-        # 計算各板塊平均變幅，並『扣除標普 500 的變幅』
-        for sector, avg_val in df_m.groupby('Sector')['Change_Pct'].mean().items():
-            alpha_val = avg_val - sp500_bench
-            daily_alpha_records.append({
-                'Date': date_str,
-                'Sector': sector,
-                'Alpha_Return': alpha_val
-            })
+        comm = list(set(df_n['Symbol']) & set(df_o['Symbol']))
+        if len(comm) > 30:
+            df_n_s = df_n[df_n['Symbol'].isin(comm)][['Symbol', 'Price', group_by_col]]
+            df_o_s = df_o[df_o['Symbol'].isin(comm)][['Symbol', 'Price']]
+            df_m_h = pd.merge(df_n_s, df_o_s, on='Symbol', suffixes=('_new', '_old'))
+            df_m_h = df_m_h[df_m_h['Price_old'] > 0]
+            df_m_h['Change_Pct'] = ((df_m_h['Price_new'] - df_m_h['Price_old']) / df_m_h['Price_old']) * 100
             
-    if not daily_alpha_records:
+            for name, group in df_m_h.groupby(group_by_col):
+                perf_records.append({
+                    'Date': date_str, 
+                    'Group': str(name).strip(), 
+                    'Avg_Pct': group['Change_Pct'].mean()
+                })
+                
+        processed_dates.add(date_str)
+        pairs_counted += 1
+
+    if group_by_col == 'Sector':
+        st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據計算板塊與行業強度")
+
+    if not perf_records:
         return None
         
-    # 4. 進行幾何複利累乘： (1 + R_alpha_1) * (1 + R_alpha_2) ... - 1
-    # 為了實現完美的漸變對比，我們在 Pivoted Table 上進行累乘
-    df_alpha_all = pd.DataFrame(daily_alpha_records)
-    df_pivot = df_alpha_all.pivot(index='Sector', columns='Date', values='Alpha_Return').fillna(0.0)
+    df_perf = pd.DataFrame(perf_records)
+    df_hm = df_perf.pivot(index='Group', columns='Date', values='Avg_Pct').fillna(0.0)
+    df_hm = df_hm[sorted(df_hm.columns, reverse=True)]
+    df_hm['7日平均 %'] = df_hm.mean(axis=1)
+    df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_7d_pct
     
-    # 依日期由舊到新排序
-    sorted_date_cols = sorted([col for col in df_pivot.columns if col != '7日平均 %'])
-    df_pivot = df_pivot[sorted_date_cols]
-    
-    # 計算複利累積
-    cumulative_factor = 1.0
-    for col in sorted_date_cols:
-        cumulative_factor *= (1.0 + df_pivot[col] / 100.0)
-    
-    df_pivot['7日累積超額 %'] = (cumulative_factor - 1.0) * 100.0
-    df_pivot.index.name = '部門板塊'
-    
-    return df_pivot
+    # 以相對大市排序
+    df_hm = df_hm.sort_values(by='相對大市 %', ascending=False)
+    df_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
+    return df_hm, sp500_7d_pct
 
 def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
@@ -565,43 +530,82 @@ def main():
     # ==================== 2️⃣ 🔥 近 7 個交易日板塊【漲跌強度】熱力圖區塊 ====================
     st.write("---")
     st.subheader("📈 近 7 個交易日板塊漲跌幅強度熱力圖 (Sector Performance Heatmap)")
-    st.markdown("💡 **提示：** 本面板計算過去 7 個交易日各板塊平均回報『扣除當日 S&P 500 (SPY) 回報』後的**累積超額複利收益 % (Alpha)**。🟢 **深綠色代表大幅跑贏大盤**，🔴 **深紅色代表大幅跑輸大盤**，中間依 0% 自動平衡。")
+    st.markdown("💡 **提示：** 本面板計算過去 7 個交易日各板塊所有成分股的**平均變幅 %**。🟢 **深綠色代表大幅暴漲**，🔴 **深紅色代表大幅暴跌**，中間依 0% 自動平衡。")
     
-    with st.spinner('🔄 正在從 yfinance 獲取標普 500 基準並重構複利熱力圖...'):
-        df_perf_hm = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str)
+    res_sector = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Sector')
     
-    if df_perf_hm is not None and not df_perf_hm.empty:
-        col_perf1, col_perf2 = st.columns(2)
-        date_cols_perf = [c for c in df_perf_hm.columns if c != '7日累積超額 %']
-        
-        # 安全計算全局極值，避免變數順序與多版本相容性 Bug
-        if date_cols_perf:
-            vals = df_perf_hm[date_cols_perf].to_numpy()
-            max_val = float(max(abs(vals.min()), abs(vals.max())))
-            if max_val == 0: max_val = 1.0
-        else:
-            max_val = 1.0
-
-        # 全體按累積表現排序
-        df_all_sorted = df_perf_hm.sort_values(by='7日累積超額 %', ascending=False)
-
-        with col_perf1:
-            st.markdown("🏆 **多頭領漲板塊排行 (依 7日累積超額 由強到弱排序)**")
-            df_perf_g = df_all_sorted.head(10)
-            st.dataframe(
-                df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日累積超額 %']),
-                width='stretch'
-            )
+    if res_sector is not None:
+        df_perf_hm, sp500_7d_pct = res_sector
+        if not df_perf_hm.empty:
+            col_perf1, col_perf2 = st.columns(2)
+            date_cols_perf = [c for c in df_perf_hm.columns if c != '7日平均 %']
             
-        with col_perf2:
-            st.markdown("🩸 **空頭領跌板塊排行 (依 7日累積超額 由弱到強排序)**")
-            df_perf_l = df_all_sorted.tail(10).sort_values(by='7日累積超額 %', ascending=True)
-            st.dataframe(
-                df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日累積超額 %']),
-                width='stretch'
-            )
+            if date_cols_perf:
+                vals = df_perf_hm[date_cols_perf].to_numpy()
+                max_val = float(max(abs(vals.min()), abs(vals.max())))
+                if max_val == 0: max_val = 1.0
+            else:
+                max_val = 1.0
+
+            df_all_sorted = df_perf_hm.sort_values(by='7日平均 %', ascending=False)
+
+            with col_perf1:
+                st.markdown("🏆 **多頭領漲板塊排行 (依 7日均值 由強到弱排序)**")
+                df_perf_g = df_all_sorted.head(10)
+                st.dataframe(
+                    df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                    width='stretch'
+                )
+                
+            with col_perf2:
+                st.markdown("🩸 **空頭領跌板塊排行 (依 7日均值 由弱到強排序)**")
+                df_perf_l = df_all_sorted.tail(10).sort_values(by='7日平均 %', ascending=True)
+                st.dataframe(
+                    df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                    width='stretch'
+                )
     else:
         st.info("暫無足夠歷史數據生成漲跌幅強度熱力圖。")
+
+    # ==================== 3️⃣ 🎯 【全新加開】近 7 個交易日行業【漲跌強度】熱力圖區塊 ====================
+    st.write("---")
+    st.subheader("🎯 近 7 個交易日細分行業漲跌幅強度熱力圖 (Industry Performance Heatmap)")
+    st.markdown("💡 **提示：** 深入追蹤更精細的**行業 (Industry) 級別**資金動向。排序與色彩對比邏輯與板塊完全一致，幫你精準抓出隱藏的領漲黑馬行業。")
+    
+    res_industry = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Industry')
+    
+    if res_industry is not None:
+        df_ind_hm, _ = res_industry
+        if not df_ind_hm.empty:
+            col_ind1, col_ind2 = st.columns(2)
+            date_cols_ind = [c for c in df_ind_hm.columns if c != '7日平均 %']
+            
+            if date_cols_ind:
+                vals_ind = df_ind_hm[date_cols_ind].to_numpy()
+                max_val_ind = float(max(abs(vals_ind.min()), abs(vals_ind.max())))
+                if max_val_ind == 0: max_val_ind = 1.0
+            else:
+                max_val_ind = 1.0
+
+            df_ind_sorted = df_ind_hm.sort_values(by='7日平均 %', ascending=False)
+
+            with col_ind1:
+                st.markdown("🚀 **多頭領漲行業排行 Top 15 (依 7日均值 由強到弱排序)**")
+                df_ind_g = df_ind_sorted.head(15)  # 行業較多，展示前 15 名
+                st.dataframe(
+                    df_ind_g.style.background_gradient(subset=date_cols_ind, cmap='RdYlGn', vmin=-max_val_ind, vmax=max_val_ind).format(formatter="{:+.2f}%", subset=date_cols_ind + ['7日平均 %']),
+                    width='stretch'
+                )
+                
+            with col_ind2:
+                st.markdown("💥 **空頭領跌行業排行 Top 15 (依 7日均值 由弱到強排序)**")
+                df_ind_l = df_ind_sorted.tail(15).sort_values(by='7日平均 %', ascending=True)
+                st.dataframe(
+                    df_ind_l.style.background_gradient(subset=date_cols_ind, cmap='RdYlGn', vmin=-max_val_ind, vmax=max_val_ind).format(formatter="{:+.2f}%", subset=date_cols_ind + ['7日平均 %']),
+                    width='stretch'
+                )
+    else:
+        st.info("暫無足夠歷史數據生成細分行業漲跌幅強度熱力圖。")
 
     # ==================================================================================================
 
@@ -635,7 +639,7 @@ def main():
     st.subheader("🩸 兩日失速暴跌排行榜 (Top 10 Losers) — 支援盤前即時聯網")
     st.dataframe(
         top_10_losers_live[cols_to_show].style.format({
-            '兩日變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
+            '兩id變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
             '即時總變幅 %': '{:+.2f}%', '即時價': '${:.2f}'
         }).background_gradient(subset=['即時總變幅 %'], cmap='Reds'), width='stretch', hide_index=True
     )
