@@ -246,9 +246,24 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     return df_add_hm, df_rem_hm
 
 def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str):
-    """追蹤近 7 個交易日各板塊的平均兩日漲跌幅 % 強度"""
+    """追蹤近 7 個交易日各板塊漲跌幅 + 相對 S&P 500"""
     perf_records = []
     
+    # === 改進版 S&P 500 抓取 ===
+    sp500_avg = 0.0
+    sp_success = False
+    try:
+        import yfinance as yf
+        sp500 = yf.download("^GSPC", period="30d", progress=False, timeout=10)['Adj Close']
+        if not sp500.empty:
+            sp500_returns = sp500.pct_change() * 100
+            sp500_avg = sp500_returns.mean()  # 過去一段時間平均
+            sp_success = True
+            st.success(f"📈 S&P 500 過去數據獲取成功（平均每日 {sp500_avg:.2f}%)")
+    except Exception as e:
+        st.warning(f"⚠️ S&P 500 數據暫時無法獲取（{str(e)[:80]}...），使用絕對漲跌幅")
+    
+    # 當前一對
     set_new = set(active_df_new['Symbol'])
     set_old = set(active_df_old['Symbol'])
     common = list(set_new & set_old)
@@ -259,11 +274,17 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         df_m = df_m[df_m['Price_old'] > 0]
         df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
         
-        for sector, val in df_m.groupby('Sector')['Change_Pct'].mean().items():
-            perf_records.append({'Date': active_date_str, 'Sector': sector, 'Avg_Pct': val})
-            
+        for sector, group in df_m.groupby('Sector'):
+            perf_records.append({
+                'Date': active_date_str, 
+                'Sector': str(sector).strip(), 
+                'Avg_Pct': group['Change_Pct'].mean()
+            })
+
+    # 歷史數據 loop（保持原有邏輯）
     processed_dates = {active_date_str}
     pairs_counted = 1
+    local_files = sorted(local_files, key=lambda x: os.path.basename(x), reverse=True)
     
     for i in range(len(local_files) - 1):
         if pairs_counted >= 7:
@@ -282,29 +303,42 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         if df_n is None or df_o is None:
             continue
             
-        s_n = set(df_n['Symbol'])
-        s_o = set(df_o['Symbol'])
-        comm = list(s_n & s_o)
-        if comm:
+        comm = list(set(df_n['Symbol']) & set(df_o['Symbol']))
+        if len(comm) > 30:
             df_n_s = df_n[df_n['Symbol'].isin(comm)][['Symbol', 'Price', 'Sector']]
             df_o_s = df_o[df_o['Symbol'].isin(comm)][['Symbol', 'Price']]
             df_m_h = pd.merge(df_n_s, df_o_s, on='Symbol', suffixes=('_new', '_old'))
             df_m_h = df_m_h[df_m_h['Price_old'] > 0]
             df_m_h['Change_Pct'] = ((df_m_h['Price_new'] - df_m_h['Price_old']) / df_m_h['Price_old']) * 100
             
-            for sector, val in df_m_h.groupby('Sector')['Change_Pct'].mean().items():
-                perf_records.append({'Date': date_str, 'Sector': sector, 'Avg_Pct': val})
+            for sector, group in df_m_h.groupby('Sector'):
+                perf_records.append({
+                    'Date': date_str, 
+                    'Sector': str(sector).strip(), 
+                    'Avg_Pct': group['Change_Pct'].mean()
+                })
                 
         processed_dates.add(date_str)
         pairs_counted += 1
-        
+    
+    st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據計算")
+
     if not perf_records:
         return None
         
     df_perf = pd.DataFrame(perf_records)
     df_hm = df_perf.pivot(index='Sector', columns='Date', values='Avg_Pct').fillna(0.0)
-    df_hm = df_hm[sorted(df_hm.columns)]
+    df_hm = df_hm[sorted(df_hm.columns, reverse=True)]
     df_hm['7日平均 %'] = df_hm.mean(axis=1)
+    
+    # === 相對大市 ===
+    if sp_success:
+        df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_avg
+        sort_col = '相對大市 %'
+    else:
+        sort_col = '7日平均 %'
+    
+    df_hm = df_hm.sort_values(by=sort_col, ascending=False)
     df_hm.index.name = '部門板塊'
     return df_hm
 
