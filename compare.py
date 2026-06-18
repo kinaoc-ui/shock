@@ -1,7 +1,7 @@
 import os
 import glob
 import re
-from datetime import datetime  # 導入日期模組
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -18,19 +18,41 @@ def get_latest_two_csvs():
     if len(csv_files) < 2:
         return None, None
         
-    # 【核心修正】唔再用檔案修改時間，直接用檔名文字（包含 YYYY-MM-DD）做倒序排序
-    # 咁樣 new_2026-06-17 必定排在 new_2026-06-16 前面，絕對不會因為下載時間而錯亂
+    # 直接用檔名文字（包含 YYYY-MM-DD）做倒序排序
     csv_files.sort(reverse=True)
     return csv_files[0], csv_files[1]
 
+def push_to_github_backend(file_name, file_bytes):
+    """【後台自動化核心】將網頁收到的 CSV 即時經後台 Commit & Push 回 GitHub"""
+    if "GITHUB_TOKEN" not in st.secrets:
+        return False
+        
+    try:
+        from github import Github
+        token = st.secrets["GITHUB_TOKEN"]
+        repo_name = "kinaoc-ui/shock"  # 你嘅專案路徑
+        
+        g = Github(token)
+        repo = g.get_repo(repo_name)
+        
+        # 檢查 GitHub 內原本有冇同名檔案，有就覆蓋，冇就新建
+        try:
+            contents = repo.get_contents(file_name)
+            repo.update_file(contents.path, f"Auto-update {file_name} via web", file_bytes, contents.sha)
+        except:
+            repo.create_file(file_name, f"Auto-upload {file_name} via web", file_bytes)
+        return True
+    except Exception as e:
+        st.warning(f"後台自動備份到 GitHub 失敗（但不影響本次運算）: {e}")
+        return False
+
 def load_and_clean_csv(file_path_or_buffer):
-    """讀取 CSV 並清洗欄位名稱與代號（含缺失欄位自動補底，支援上傳與本地讀取）"""
+    """讀取 CSV 並清洗欄位名稱與代號（含缺失欄位自動補底）"""
     try:
         df = pd.read_csv(file_path_or_buffer)
         df.rename(columns={df.columns[0]: 'Symbol'}, inplace=True)
         df['Symbol'] = df['Symbol'].astype(str).str.strip()
         
-        # 定義預期的標準欄位名稱對照表
         standard_cols = {
             'description': 'Description',
             'price': 'Price',
@@ -48,7 +70,6 @@ def load_and_clean_csv(file_path_or_buffer):
         
         df.rename(columns=rename_dict, inplace=True)
         
-        # 防呆自動補底
         if 'Description' not in df.columns: df['Description'] = 'N/A'
         if 'Price' not in df.columns: df['Price'] = 0.0
         if 'Sector' not in df.columns: df['Sector'] = 'Unclassified'
@@ -97,13 +118,12 @@ def fetch_live_market_data(symbols):
     return live_data
 
 def generate_tradingview_watchlist_content(df_added, df_removed, top_gainers, top_losers):
-    """純記憶體生成 TradingView 專用導入格式的文字內容 (支援 Sector + Industry 雙層分組標頭)"""
+    """純記憶體生成 TradingView 專用導入格式的文字內容"""
     if df_added.empty and df_removed.empty and top_gainers.empty and top_losers.empty:
         return ""
 
     output = []
     
-    # ======= 1. 兩日漲跌最強的 20 隻動能核心股 =======
     if not top_gainers.empty:
         df_tg = top_gainers.copy()
         df_tg['部門板塊'] = df_tg['部門板塊'].fillna('Unclassified').astype(str).str.strip()
@@ -124,7 +144,6 @@ def generate_tradingview_watchlist_content(df_added, df_removed, top_gainers, to
             for symbol in group['Symbol']: output.append(f"{symbol}\n")
             output.append("\n")
 
-    # ======= 2. 處理 [新增進榜] 的股票 =======
     if not df_added.empty:
         df_ad = df_added.copy()
         df_ad['部門板塊'] = df_ad['部門板塊'].fillna('Unclassified').astype(str).str.strip()
@@ -135,7 +154,6 @@ def generate_tradingview_watchlist_content(df_added, df_removed, top_gainers, to
             for symbol in group['Symbol']: output.append(f"{symbol}\n")
             output.append("\n")
 
-    # ======= 3. 處理 [被剔除/消失] 的股票 =======
     if not df_removed.empty:
         df_rm = df_removed.copy()
         df_rm['部門板塊'] = df_rm['部門板塊'].fillna('Unclassified').astype(str).str.strip()
@@ -149,9 +167,7 @@ def generate_tradingview_watchlist_content(df_added, df_removed, top_gainers, to
     return "".join(output)
 
 def format_market_cap(val):
-    """將巨大的市值數字格式化為易讀的 T/B/M 單位"""
-    if pd.isna(val) or val == 0:
-        return "N/A"
+    if pd.isna(val) or val == 0: return "N/A"
     if val >= 1e12: return f"${val / 1e12:.2f} T"
     if val >= 1e9: return f"${val / 1e9:.2f} B"
     if val >= 1e6: return f"${val / 1e6:.2f} M"
@@ -161,46 +177,52 @@ def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
     st.write("---")
 
-    # ==================== 📁 數據上傳區 ====================
     st.markdown("### 📁 數據上傳區")
-    st.markdown("你可以直接丟入新的 CSV 覆蓋數據；如不上傳，系統會自動載入 GitHub 預設數據：")
+    st.markdown("當你在網頁端上傳新 CSV 檔，系統會**全自動將檔案備份同步回 GitHub** 儲存，以後無論點樣 F5 重新整理數據都唔會消失！")
     
     col_up1, col_up2 = st.columns(2)
     with col_up1:
-        uploaded_new = st.file_uploader("1️⃣ 上傳最新一日 CSV (New)", type=["csv"])
+        uploaded_new = st.file_uploader("1️⃣ 上傳最新一日 CSV (格式必須為 new_YYYY-MM-DD.csv)", type=["csv"])
     with col_up2:
-        uploaded_old = st.file_uploader("2️⃣ 上傳前一日 CSV (Old)", type=["csv"])
+        uploaded_old = st.file_uploader("2️⃣ 上傳前一日 CSV (格式必須為 new_YYYY-MM-DD.csv)", type=["csv"])
 
-    df_new = None
-    df_old = None
+    df_new, df_old = None, None
     data_source_msg = ""
-    is_manual_upload = False
 
     if uploaded_new and uploaded_old:
         df_new = load_and_clean_csv(uploaded_new)
         df_old = load_and_clean_csv(uploaded_old)
         data_source_msg = "📂 **當前數據來源：** 網頁端手動上傳的 CSV 數據"
-        is_manual_upload = True
+        
+        # 【核心觸發】利用 Session State 鎖定，防止重新渲染時無故重複提交
+        if st.session_state.get(f"synced_{uploaded_new.name}") is None:
+            if push_to_github_backend(uploaded_new.name, uploaded_new.getvalue()):
+                st.session_state[f"synced_{uploaded_new.name}"] = True
+                st.toast(f"🚀 {uploaded_new.name} 已成功自動上傳並永久儲存至 GitHub！", icon="✨")
+                
+        if st.session_state.get(f"synced_{uploaded_old.name}") is None:
+            if push_to_github_backend(uploaded_old.name, uploaded_old.getvalue()):
+                st.session_state[f"synced_{uploaded_old.name}"] = True
+                st.toast(f"🚀 {uploaded_old.name} 已成功自動上傳並永久儲存至 GitHub！", icon="✨")
     else:
         new_file, old_file = get_latest_two_csvs()
         if new_file and old_file:
             df_new = load_and_clean_csv(new_file)
             df_old = load_and_clean_csv(old_file)
-            data_source_msg = f"📅 **當前數據來源：** 系統內置預載數據 \n* **新一日（當前）：** `{os.path.basename(new_file)}` \n* **舊一日（前天）：** `{os.path.basename(old_file)}`"
+            data_source_msg = f"📅 **當前數據來源：** GitHub 雲端儲存數據 \n* **新一日（當前）：** `{os.path.basename(new_file)}` \n* **舊一日（前天）：** `{os.path.basename(old_file)}`"
 
     if df_new is None or df_old is None:
-        st.info("👋 **歡迎使用！請在上方「數據上傳區」上傳檔案**\n\n請直接將兩份由 TradingView 匯出的 CSV 檔案拖放到上面的框框中，系統就會立刻顯示分析結果！")
+        st.info("👋 **歡迎使用！請在上方「數據上傳區」直接投入兩份 CSV 檔案。**")
         return
 
     st.success(data_source_msg)
 
-    # ==================== 🛠️ 計算與邏輯比對 ====================
+    # 比對邏輯
     set_new = set(df_new['Symbol'])
     set_old = set(df_old['Symbol'])
     
-    # 確保新舊邏輯完全清晰不顛倒
-    added_symbols = list(set_new - set_old)     # 在新榜但不在舊榜 -> 新增進榜 (up)
-    removed_symbols = list(set_old - set_new)   # 在舊榜但不在新榜 -> 被剔除 (down)
+    added_symbols = list(set_new - set_old)     
+    removed_symbols = list(set_old - set_new)   
 
     df_added_info = df_new[df_new['Symbol'].isin(added_symbols)][['Symbol', 'Description', 'Price', 'Sector', 'Industry']].rename(
         columns={'Sector': '部門板塊', 'Industry': '行業'}
@@ -219,20 +241,11 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 生成下載內容
+    # 產生下載
     today_str = datetime.now().strftime("%Y-%m-%d")
     txt_content = generate_tradingview_watchlist_content(df_added_info, df_removed_info, top_10_gainers, top_10_losers)
     
     if txt_content:
-        if not is_manual_upload:
-            try:
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-                local_file_path = os.path.join(script_dir, f"{today_str}.txt")
-                with open(local_file_path, "w", encoding="utf-8") as lf:
-                    lf.write(txt_content)
-            except:
-                pass
-        
         st.download_button(
             label="📥 點擊下載今日 TradingView 分類導入檔 (.txt)",
             data=txt_content,
@@ -241,7 +254,7 @@ def main():
             use_container_width=True
         )
 
-    # ==================== 🔍 HEADER 摘要與數據呈現 ====================
+    # 數據看板呈現
     st.markdown("### 🔍 當前數據篩選特徵摘要")
     total_stocks = len(df_new)
     unique_sectors = df_new['Sector'].nunique()
@@ -269,11 +282,8 @@ def main():
 
     st.write("---")
 
-    # 聯網抓即時數據
-    top_gainers_syms = top_10_gainers['Symbol'].tolist()
-    top_losers_syms = top_10_losers['Symbol'].tolist()
-    all_target_syms = list(set(top_gainers_syms + top_losers_syms))
-    
+    # 聯網爬即時報價
+    all_target_syms = list(set(top_10_gainers['Symbol'].tolist() + top_10_losers['Symbol'].tolist()))
     with st.spinner('🔄 正在同步美股聯網，抓取最新盤前/盤後即時報價...'):
         live_quotes = fetch_live_market_data(all_target_syms)
     
