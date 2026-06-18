@@ -246,7 +246,7 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     return df_add_hm, df_rem_hm
 
 def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str, group_by_col='Sector'):
-    """近 7 日板塊/行業強度 + 相對 S&P 500（通用抽象版，支援 Sector 與 Industry）"""
+    """近 7 日板塊/行業強度 + 精準相對 S&P 500"""
     perf_records = []
     
     # ==================== 抓取 S&P 500 7日平均 ====================
@@ -254,13 +254,13 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     sp_success = False
     
     try:
-        import yfinance as yf
+        # 多重嘗試
         for attempt in range(3):
             try:
                 sp500 = yf.download("^GSPC", period="15d", progress=False, timeout=15, threads=False)
                 if not sp500.empty and 'Adj Close' in sp500.columns:
                     returns = sp500['Adj Close'].pct_change() * 100
-                    sp500_7d_pct = returns.tail(7).mean()   # 最近7個交易日平均
+                    sp500_7d_pct = float(returns.tail(7).mean())   # 最近7個交易日平均
                     sp_success = True
                     break
             except:
@@ -268,7 +268,6 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
     except:
         pass
 
-    # 僅在計算 Sector 時顯示一次大盤提示資訊，避免 Industry 重複洗版
     if group_by_col == 'Sector':
         if sp_success:
             st.success(f"✅ S&P 500 過去7日平均每日變幅： **{sp500_7d_pct:+.2f}%**")
@@ -276,7 +275,7 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
             st.warning("⚠️ 無法自動獲取 S&P 500 數據，使用 0% 作為基準（只顯示絕對漲跌）")
             sp500_7d_pct = 0.0
 
-    # ==================== 計算各分組 (Sector 或 Industry) ====================
+    # ==================== 計算各分組 ====================
     set_new = set(active_df_new['Symbol'])
     set_old = set(active_df_old['Symbol'])
     common = list(set_new & set_old)
@@ -334,22 +333,27 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         processed_dates.add(date_str)
         pairs_counted += 1
 
-    if group_by_col == 'Sector':
-        st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據計算板塊與行業強度")
+    if group_by_col == 'Sector' and perf_records:
+        st.success(f"📊 已使用 **{pairs_counted} 對** 歷史數據順利完成板塊與行業強度計算")
 
     if not perf_records:
         return None
         
     df_perf = pd.DataFrame(perf_records)
     df_hm = df_perf.pivot(index='Group', columns='Date', values='Avg_Pct').fillna(0.0)
-    df_hm = df_hm[sorted(df_hm.columns, reverse=True)]
-    df_hm['7日平均 %'] = df_hm.mean(axis=1)
+    
+    # 獲取純日期欄位清單，用於精準計算平均數，避免欄位交叉污染
+    date_columns = sorted([c for c in df_hm.columns], reverse=True)
+    df_hm = df_hm[date_columns]
+    
+    # 【核心修正】：mean(axis=1) 時明確指定只對 date_columns 進行計算
+    df_hm['7日平均 %'] = df_hm[date_columns].mean(axis=1)
     df_hm['相對大市 %'] = df_hm['7日平均 %'] - sp500_7d_pct
     
     # 以相對大市排序
     df_hm = df_hm.sort_values(by='相對大市 %', ascending=False)
     df_hm.index.name = '部門板塊' if group_by_col == 'Sector' else '細分行業'
-    return df_hm, sp500_7d_pct
+    return df_hm
 
 def main():
     st.title("📊 美股兩日清單動態對比 + 盤前即時監控大盤")
@@ -472,7 +476,7 @@ def main():
     top_10_gainers = df_merge.sort_values(by='兩日變幅 %', ascending=False).head(10)
     top_10_losers = df_merge.sort_values(by='兩日變幅 %', ascending=True).head(10)
 
-    # 採用安全的三引號解決字串斷行引發的 SyntaxError 
+    # 生成 TradingView Watchlist
     today_str = datetime.now().strftime("%Y-%m-%d")
     txt_content = generate_tradingview_watchlist_content(df_added_info, df_removed_info, top_10_gainers, top_10_losers)
     
@@ -538,7 +542,7 @@ def main():
         df_perf_hm, sp500_7d_pct = res_sector
         if not df_perf_hm.empty:
             col_perf1, col_perf2 = st.columns(2)
-            date_cols_perf = [c for c in df_perf_hm.columns if c != '7日平均 %']
+            date_cols_perf = [c for c in df_perf_hm.columns if c not in ['7日平均 %', '相對大市 %']]
             
             if date_cols_perf:
                 vals = df_perf_hm[date_cols_perf].to_numpy()
@@ -547,27 +551,27 @@ def main():
             else:
                 max_val = 1.0
 
-            df_all_sorted = df_perf_hm.sort_values(by='7日平均 %', ascending=False)
+            df_all_sorted = df_perf_hm.sort_values(by='相對大市 %', ascending=False)
 
             with col_perf1:
-                st.markdown("🏆 **多頭領漲板塊排行 (依 7日均值 由強到弱排序)**")
+                st.markdown("🏆 **多頭領漲板塊排行 (依 相對大市 % 由強到弱排序)**")
                 df_perf_g = df_all_sorted.head(10)
                 st.dataframe(
-                    df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                    df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%"),
                     width='stretch'
                 )
                 
             with col_perf2:
-                st.markdown("🩸 **空頭領跌板塊排行 (依 7日均值 由弱到強排序)**")
-                df_perf_l = df_all_sorted.tail(10).sort_values(by='7日平均 %', ascending=True)
+                st.markdown("🩸 **空頭領跌板塊排行 (依 相對大市 % 由弱到強排序)**")
+                df_perf_l = df_all_sorted.tail(10).sort_values(by='相對大市 %', ascending=True)
                 st.dataframe(
-                    df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                    df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%"),
                     width='stretch'
                 )
     else:
         st.info("暫無足夠歷史數據生成漲跌幅強度熱力圖。")
 
-    # ==================== 3️⃣ 🎯 【全新加開】近 7 個交易日行業【漲跌強度】熱力圖區塊 ====================
+    # ==================== 3️⃣ 🎯 近 7 個交易日行業【漲跌強度】熱力圖區塊 ====================
     st.write("---")
     st.subheader("🎯 近 7 個交易日細分行業漲跌幅強度熱力圖 (Industry Performance Heatmap)")
     st.markdown("💡 **提示：** 深入追蹤更精細的**行業 (Industry) 級別**資金動向。排序與色彩對比邏輯與板塊完全一致，幫你精準抓出隱藏的領漲黑馬行業。")
@@ -575,10 +579,10 @@ def main():
     res_industry = calculate_recent_7_days_performance(local_files, df_new, df_old, active_date_str, group_by_col='Industry')
     
     if res_industry is not None:
-        df_ind_hm, _ = res_industry
+        df_ind_hm, sp500_7d_pct = res_industry
         if not df_ind_hm.empty:
             col_ind1, col_ind2 = st.columns(2)
-            date_cols_ind = [c for c in df_ind_hm.columns if c != '7日平均 %']
+            date_cols_ind = [c for c in df_ind_hm.columns if c not in ['7日平均 %', '相對大市 %']]
             
             if date_cols_ind:
                 vals_ind = df_ind_hm[date_cols_ind].to_numpy()
@@ -587,21 +591,21 @@ def main():
             else:
                 max_val_ind = 1.0
 
-            df_ind_sorted = df_ind_hm.sort_values(by='7日平均 %', ascending=False)
+            df_ind_sorted = df_ind_hm.sort_values(by='相對大市 %', ascending=False)
 
             with col_ind1:
-                st.markdown("🚀 **多頭領漲行業排行 Top 15 (依 7日均值 由強到弱排序)**")
-                df_ind_g = df_ind_sorted.head(15)  # 行業較多，展示前 15 名
+                st.markdown("🚀 **多頭領漲行業排行 Top 15 (依 相對大市 % 由強到弱排序)**")
+                df_ind_g = df_ind_sorted.head(15)
                 st.dataframe(
-                    df_ind_g.style.background_gradient(subset=date_cols_ind, cmap='RdYlGn', vmin=-max_val_ind, vmax=max_val_ind).format(formatter="{:+.2f}%", subset=date_cols_ind + ['7日平均 %']),
+                    df_ind_g.style.background_gradient(subset=date_cols_ind, cmap='RdYlGn', vmin=-max_val_ind, vmax=max_val_ind).format(formatter="{:+.2f}%"),
                     width='stretch'
                 )
                 
             with col_ind2:
-                st.markdown("💥 **空頭領跌行業排行 Top 15 (依 7日均值 由弱到強排序)**")
-                df_ind_l = df_ind_sorted.tail(15).sort_values(by='7日平均 %', ascending=True)
+                st.markdown("💥 **空頭領跌行業排行 Top 15 (依 相對大市 % 由弱到強排序)**")
+                df_ind_l = df_ind_sorted.tail(15).sort_values(by='相對大市 %', ascending=True)
                 st.dataframe(
-                    df_ind_l.style.background_gradient(subset=date_cols_ind, cmap='RdYlGn', vmin=-max_val_ind, vmax=max_val_ind).format(formatter="{:+.2f}%", subset=date_cols_ind + ['7日平均 %']),
+                    df_ind_l.style.background_gradient(subset=date_cols_ind, cmap='RdYlGn', vmin=-max_val_ind, vmax=max_val_ind).format(formatter="{:+.2f}%"),
                     width='stretch'
                 )
     else:
@@ -639,7 +643,7 @@ def main():
     st.subheader("🩸 兩日失速暴跌排行榜 (Top 10 Losers) — 支援盤前即時聯網")
     st.dataframe(
         top_10_losers_live[cols_to_show].style.format({
-            '兩id變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
+            '兩日變幅 %': '{:+.2f}%', '最新收盤價 (新)': '${:.2f}', '前日收盤價 (舊)': '${:.2f}', '市值 (USD)': '{:,.0f}',
             '即時總變幅 %': '{:+.2f}%', '即時價': '${:.2f}'
         }).background_gradient(subset=['即時總變幅 %'], cmap='Reds'), width='stretch', hide_index=True
     )
