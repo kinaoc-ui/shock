@@ -175,7 +175,6 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     added_records = []
     removed_records = []
     
-    # 1. 先塞入當前畫面上正在對比的最新一組數據
     set_new = set(active_df_new['Symbol'])
     set_old = set(active_df_old['Symbol'])
     
@@ -189,7 +188,6 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
         for sector, count in df_r['Sector'].value_counts().items():
             removed_records.append({'Date': active_date_str, 'Sector': sector, 'Count': count})
             
-    # 2. 依序讀取硬碟歷史檔案，補足剩下天數（最多向前追溯合計 7 組交易日）
     processed_dates = {active_date_str}
     pairs_counted = 1
     
@@ -248,10 +246,9 @@ def calculate_recent_7_days_trends(local_files, active_df_new, active_df_old, ac
     return df_add_hm, df_rem_hm
 
 def calculate_recent_7_days_performance(local_files, active_df_new, active_df_old, active_date_str):
-    """【全新核心算法】追蹤近 7 個交易日各板塊的平均兩日漲跌幅 % 強度"""
+    """追蹤近 7 個交易日各板塊的平均兩日漲跌幅 % 強度"""
     perf_records = []
     
-    # 1. 計算當前活動對比日的板塊平均表現
     set_new = set(active_df_new['Symbol'])
     set_old = set(active_df_old['Symbol'])
     common = list(set_new & set_old)
@@ -259,13 +256,12 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         df_n_sub = active_df_new[active_df_new['Symbol'].isin(common)][['Symbol', 'Price', 'Sector']]
         df_o_sub = active_df_old[active_df_old['Symbol'].isin(common)][['Symbol', 'Price']]
         df_m = pd.merge(df_n_sub, df_o_sub, on='Symbol', suffixes=('_new', '_old'))
-        df_m = df_m[df_m['Price_old'] > 0]  # 安全過濾
+        df_m = df_m[df_m['Price_old'] > 0]
         df_m['Change_Pct'] = ((df_m['Price_new'] - df_m['Price_old']) / df_m['Price_old']) * 100
         
         for sector, val in df_m.groupby('Sector')['Change_Pct'].mean().items():
             perf_records.append({'Date': active_date_str, 'Sector': sector, 'Avg_Pct': val})
             
-    # 2. 追蹤剩下幾天的歷史檔案
     processed_dates = {active_date_str}
     pairs_counted = 1
     
@@ -307,7 +303,7 @@ def calculate_recent_7_days_performance(local_files, active_df_new, active_df_ol
         
     df_perf = pd.DataFrame(perf_records)
     df_hm = df_perf.pivot(index='Sector', columns='Date', values='Avg_Pct').fillna(0.0)
-    df_hm = df_hm[sorted(df_hm.columns)]  # 日期由舊到新
+    df_hm = df_hm[sorted(df_hm.columns)]
     df_hm['7日平均 %'] = df_hm.mean(axis=1)
     df_hm.index.name = '部門板塊'
     return df_hm
@@ -446,7 +442,7 @@ def main():
             use_container_width=True
         )
 
-    # 介面排版：直接呈現 新增 / 剔除 股票細節
+    # 介面排版：呈現 新增 / 剔除 股票細節
     col_add, col_rem = st.columns(2)
     with col_add:
         st.success(f"➕ **新增進榜股票 (共 {len(added_symbols)} 隻)**")
@@ -471,7 +467,7 @@ def main():
         if df_add_hm is not None and not df_add_hm.empty:
             date_cols = [c for c in df_add_hm.columns if c != '總計']
             st.dataframe(
-                df_add_hm.style.background_gradient(subset=date_cols, cmap='Greens').format("{:d}", subset=date_cols),
+                df_add_hm.style.background_gradient(subset=date_cols, cmap='Greens').format(formatter="{:d}", subset=date_cols),
                 width='stretch'
             )
         else:
@@ -482,7 +478,7 @@ def main():
         if df_rem_hm is not None and not df_rem_hm.empty:
             date_cols = [c for c in df_rem_hm.columns if c != '總計']
             st.dataframe(
-                df_rem_hm.style.background_gradient(subset=date_cols, cmap='Reds').format("{:d}", subset=date_cols),
+                df_rem_hm.style.background_gradient(subset=date_cols, cmap='Reds').format(formatter="{:d}", subset=date_cols),
                 width='stretch'
             )
         else:
@@ -499,11 +495,19 @@ def main():
         col_perf1, col_perf2 = st.columns(2)
         date_cols_perf = [c for c in df_perf_hm.columns if c != '7日平均 %']
         
+        # 安全計算全局極值，避免變數順序與多版本相容性 Bug
+        if date_cols_perf:
+            vals = df_perf_hm[date_cols_perf].to_numpy()
+            max_val = float(max(abs(vals.min()), abs(vals.max())))
+            if max_val == 0: max_val = 1.0
+        else:
+            max_val = 1.0
+
         with col_perf1:
             st.markdown("🏆 **多頭領漲板塊排行 (依 7日均值 由強到弱排序)**")
             df_perf_g = df_perf_hm.sort_values(by='7日平均 %', ascending=False)
             st.dataframe(
-                df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', center=0).format("{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                df_perf_g.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
                 width='stretch'
             )
             
@@ -511,11 +515,12 @@ def main():
             st.markdown("🩸 **空頭領跌板塊排行 (依 7日均值 由弱到強排序)**")
             df_perf_l = df_perf_hm.sort_values(by='7日平均 %', ascending=True)
             st.dataframe(
-                df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', center=0).format("{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
+                df_perf_l.style.background_gradient(subset=date_cols_perf, cmap='RdYlGn', vmin=-max_val, vmax=max_val).format(formatter="{:+.2f}%", subset=date_cols_perf + ['7日平均 %']),
                 width='stretch'
             )
     else:
         st.info("暫無足夠歷史數據生成漲跌幅強度熱力圖。")
+
     # ==================================================================================================
 
     st.write("---")
